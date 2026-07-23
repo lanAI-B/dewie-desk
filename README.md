@@ -26,9 +26,10 @@ back to owning the plumbing we chose to shed.
 
 ## Local pilot — order of operations
 
-Goal: prove the highest-risk integration first — **M365 inbound → ticket → reply back
-out** — on a **test mailbox, no live mail, no auto-send**. Do not stop the team's
-forwarding until the board stays sane on its own.
+Goal: prove the mail loop first — **inbound → ticket → reply back out** — on a
+**test mailbox, no live mail, no auto-send**. Pilot against Rackspace IMAP/SMTP (what
+we run today); M365 OAuth is a later inbox swap. Do not stop the team's forwarding
+until the board stays sane on its own.
 
 1. **Bring Chatwoot up** (needs Docker Desktop):
    ```
@@ -39,12 +40,15 @@ forwarding until the board stays sane on its own.
    Chatwoot is at http://localhost:3000 — create the super admin account.
 
 2. **Connect the mailbox — in the Chatwoot UI, not here.** Chatwoot configures email
-   channels in-app (Inbox → Add Inbox → Email). Modern Chatwoot has a native
-   **Microsoft** channel that connects via **OAuth** — this sidesteps the xoauth2-in-IMAP
-   quirk. Needs an Azure app registration:
-   - API permissions: `Mail.ReadWrite`, `Mail.Send`, `offline_access`
-   - Redirect URI pointing at this Chatwoot instance
-   - Fallback: generic IMAP inbound + SMTP outbound (the xoauth2 path we were wary of).
+   channels in-app (Inbox → Add Inbox → Email).
+   - **Now (Rackspace):** we're still on Rackspace, so pilot with generic **IMAP/SMTP**
+     and plain auth (`secure.emailsrvr.com`, IMAP 993 / SMTP 465) — the same mailbox
+     the current desk already reads. No Azure, no OAuth. Use a **test mailbox**, not a
+     live customer inbox.
+   - **Later (M365):** when the Rackspace→M365 migration completes, add a new inbox via
+     Chatwoot's native **Microsoft OAuth** channel (Azure app with `Mail.ReadWrite`,
+     `Mail.Send`, `offline_access`) and retire the Rackspace one. Provider swap is UI
+     config only — the bridge and drafter never change.
 
 3. **Observe.** Send a test email to the connected mailbox; confirm it lands as a ticket.
    Reply from the Chatwoot UI; confirm it reaches the sender. **This is the go/no-go.**
@@ -68,10 +72,12 @@ forwarding until the board stays sane on its own.
 |------|-------|
 | Repo scaffold, bridge code | Dewie (this repo) |
 | Docker running on the box | Lana (deployment side) |
-| Azure app registration / M365 creds | Lana (Azure gate) |
+| Rackspace test-mailbox IMAP/SMTP creds | Lana (already in hand — desk uses them) |
+| Azure app registration / M365 creds | Lana — **future**, only when M365 migration lands |
 | Watching the shadow-run board | Both |
 
 ## Status
 
 Phase 0 (extract canonical drafter + golden suite) — **done** in `DewieBrain`
-(`dewie_brain/drafter/`). This repo is Phase 1: prove the M365 loop on local.
+(`dewie_brain/drafter/`). This repo is Phase 1: prove the mail loop on local against
+Rackspace IMAP/SMTP. M365 OAuth is a later inbox swap, gated on the migration.
