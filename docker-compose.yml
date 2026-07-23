@@ -49,8 +49,8 @@ services:
     image: pgvector/pgvector:pg16
     restart: always
     ports:
-      # Host 5433 -> container 5432: avoids colliding with Dewie's local Postgres.
-      - '127.0.0.1:5433:5432'
+      # Host 5435 -> container 5432: clear of Dewie's dev (5433) and cloud (5434) Postgres.
+      - '127.0.0.1:5435:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
