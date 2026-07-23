@@ -1,0 +1,74 @@
+# Dewie Desk — Chatwoot substrate, ADOPTED (not forked).
+# Chatwoot rides as a pinned upstream image; we own only .env, this file, and bridge/.
+# Based on Chatwoot's official docker-compose.production.yaml.
+# Pin CHATWOOT_TAG in .env before first boot (see README) — do not run :latest in anger.
+
+x-base: &base
+  image: chatwoot/chatwoot:${CHATWOOT_TAG:-latest}
+  env_file: .env
+  volumes:
+    - storage_data:/app/storage
+  restart: always
+
+services:
+  # One-shot on first boot: create + migrate + seed the DB. Run via:
+  #   docker compose run --rm base-prepare
+  base-prepare:
+    <<: *base
+    depends_on: [postgres, redis]
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    entrypoint: docker/entrypoints/rails.sh
+    command: ['bundle', 'exec', 'rails', 'db:chatwoot_prepare']
+    restart: "no"
+
+  rails:
+    <<: *base
+    depends_on: [postgres, redis]
+    ports:
+      - '127.0.0.1:3000:3000'
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    entrypoint: docker/entrypoints/rails.sh
+    command: ['bundle', 'exec', 'rails', 's', '-p', '3000', '-b', '0.0.0.0']
+
+  sidekiq:
+    <<: *base
+    depends_on: [postgres, redis]
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: always
+    ports:
+      # Host 5433 -> container 5432: avoids colliding with Dewie's local Postgres.
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
+  redis:
+    image: redis:alpine
+    restart: always
+    command: ["sh", "-c", "redis-server --requirepass \"$REDIS_PASSWORD\""]
+    env_file: .env
+    volumes:
+      - redis_data:/data
+    ports:
+      - '127.0.0.1:6379:6379'
+
+volumes:
+  storage_data:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,5 @@
+# The bridge itself is tiny. Drafting deps come from the DewieBrain repo
+# (referenced via DEWIE_BRAIN_PATH), which the bridge imports — not vendored here.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+requests>=2.31
