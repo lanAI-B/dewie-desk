@@ -20,10 +20,25 @@ from fastapi import FastAPI, Request
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("dewie-desk-bridge")
 
+# Load the repo-root .env (one level up from bridge/) so config + secrets are
+# present whether launched from bridge/ or the repo root.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+except ImportError:
+    pass
+
 # ── Reference the DewieBrain package; do NOT vendor it. ───────────────────────
 _BRAIN = os.environ.get("DEWIE_BRAIN_PATH")
 if _BRAIN and _BRAIN not in sys.path:
     sys.path.insert(0, _BRAIN)
+    # The brain carries its own secrets (Anthropic key, DB creds). Load them too,
+    # WITHOUT overriding the bridge's own vars (load_dotenv won't clobber existing).
+    try:
+        from dotenv import load_dotenv as _ld
+        _ld(os.path.join(_BRAIN, ".env"))
+    except ImportError:
+        pass
 
 from chatwoot import ChatwootClient  # noqa: E402  (local module)
 
