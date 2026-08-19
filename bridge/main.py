@@ -1,7 +1,7 @@
 """dewie-desk-bridge — the only new code in this repo.
 
 Hears Chatwoot webhooks, runs classify -> enrich -> draft using the CANONICAL
-drafter imported from the DewieBrain repo (never copied), and posts the result as
+drafter installed from the DewieOps package (never copied), and posts the result as
 a PRIVATE NOTE. It has no drafting logic of its own. SEND stays a human click.
 
 Guardrails (Phase 1/2 pilot):
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 
 from fastapi import FastAPI, Request
 
@@ -28,18 +27,7 @@ try:
 except ImportError:
     pass
 
-# ── Reference the DewieBrain package; do NOT vendor it. ───────────────────────
-_BRAIN = os.environ.get("DEWIE_BRAIN_PATH")
-if _BRAIN and _BRAIN not in sys.path:
-    sys.path.insert(0, _BRAIN)
-    # The brain carries its own secrets (Anthropic key, DB creds). Load them too,
-    # WITHOUT overriding the bridge's own vars (load_dotenv won't clobber existing).
-    try:
-        from dotenv import load_dotenv as _ld
-        _ld(os.path.join(_BRAIN, ".env"))
-    except ImportError:
-        pass
-
+# The canonical dewie_brain package is installed from the sibling DewieOps repo.
 from chatwoot import ChatwootClient  # noqa: E402  (local module)
 
 DRY_RUN = os.environ.get("BRIDGE_DRY_RUN", "true").lower() != "false"
@@ -68,7 +56,7 @@ def _classify(subject: str, body: str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "dry_run": DRY_RUN, "brain_path": _BRAIN}
+    return {"ok": True, "dry_run": DRY_RUN, "core": "dewie-ops"}
 
 
 @app.post("/webhook")
@@ -90,7 +78,7 @@ async def webhook(req: Request) -> dict:
     if not (conv_id and from_email and body.strip()):
         return {"skipped": "missing conv_id / sender email / body"}
 
-    # Import here so the app still boots for /health if DewieBrain isn't on the path.
+    # Import here so /health still diagnoses an incomplete bridge installation.
     from dewie_brain.drafter import draft_reply, DraftRequest  # noqa: E402
 
     result = draft_reply(DraftRequest(

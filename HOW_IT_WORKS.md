@@ -20,7 +20,7 @@ debug the desk without me.
                    │ import  draft_reply(DraftRequest) -> DraftResult
                    ▼
    ┌─────────────────────────────────────────────────────────────────┐
-   │  BRAIN  (yours — the value: DewieBrain/dewie_brain/drafter/)       │
+   │  BRAIN  (yours — installed from DewieOps/dewie_brain/drafter/)   │
    │  KB search, order lookups (read-only), Opus draft, tone, SOPs     │
    └─────────────────────────────────────────────────────────────────┘
 ```
@@ -47,8 +47,8 @@ The brain never imports Chatwoot; the bridge never drafts. That's the whole desi
 ## Operating it
 
 ```powershell
-# start the bridge (uses the DewieBrain venv, which already has all the deps)
-& "C:\Users\lana\Documents\DewieBrain\.venv\Scripts\python.exe" -m uvicorn main:app `
+# start the bridge from its own environment; requirements install DewieOps
+& ".\.venv\Scripts\python.exe" -m uvicorn main:app `
     --app-dir "C:\Users\lana\Documents\dewie-desk\bridge" --host 0.0.0.0 --port 8624
 
 # is it alive?

@@ -1,5 +1,6 @@
-# The bridge itself is tiny. Drafting deps come from the DewieBrain repo
-# (referenced via DEWIE_BRAIN_PATH), which the bridge imports — not vendored here.
+# Install the canonical runtime package from the sibling DewieOps checkout.
+# Keep both repositories under the same parent directory, as on the office box.
+-e ../../DewieOps
 fastapi>=0.110
 uvicorn[standard]>=0.29
 requests>=2.31

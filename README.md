@@ -2,8 +2,7 @@
 
 Chatwoot-based support desk for ABS / Actex, with Dewie as the intelligence layer.
 
-**Design doctrine — adopt, don't own the plumbing.** See
-`DewieBrain/docs/email_workflow_redesign.md`. The ticket pipeline, auth, agent UI,
+**Design doctrine — adopt, don't own the plumbing.** The ticket pipeline, auth, agent UI,
 and email transport are Chatwoot's job; this repo owns only a thin layer on top:
 
 - `docker-compose.yml` — **adopts** the upstream `chatwoot/chatwoot` image (pinned via
@@ -12,7 +11,7 @@ and email transport are Chatwoot's job; this repo owns only a thin layer on top:
 - `bridge/` — `dewie-desk-bridge`: a thin webhook worker. Hears Chatwoot events,
   runs classify → enrich → draft, posts the draft as a **private note**, applies
   labels. It contains **no drafting logic of its own** — it *imports* the canonical
-  drafter from the `DewieBrain` repo (`dewie_brain.drafter.draft_reply`). Copy-paste
+  drafter from the installed `DewieOps` package (`dewie_brain.drafter.draft_reply`). Copy-paste
   is banned; that's how tone drifted last time.
 - `.env` — secrets + config (gitignored; copy from `.env.example`).
 
@@ -57,7 +56,6 @@ until the board stays sane on its own.
    ```
    cd bridge
    pip install -r requirements.txt
-   $env:DEWIE_BRAIN_PATH = "C:\Users\lana\Documents\DewieBrain"   # reference, not copy
    uvicorn main:app --port 8624
    ```
    In Chatwoot: Settings → Integrations → Webhooks → add
@@ -78,6 +76,6 @@ until the board stays sane on its own.
 
 ## Status
 
-Phase 0 (extract canonical drafter + golden suite) — **done** in `DewieBrain`
+Phase 0 (extract canonical drafter + golden suite) — **done** in `DewieOps`
 (`dewie_brain/drafter/`). This repo is Phase 1: prove the mail loop on local against
 Rackspace IMAP/SMTP. M365 OAuth is a later inbox swap, gated on the migration.
