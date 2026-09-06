@@ -1,7 +1,22 @@
 # Desk bridge modernization plan
 
-Status: design plan only. No QA or production change is authorized by this
-document.
+Status: implementation started in source. No image has been built, QA has not
+been changed, and production remains unchanged.
+
+## Implementation progress
+
+- DewieOps commit `611818c` adds the typed fail-closed decision policy,
+  provider-neutral classifier call, independent runtime selection, and tests.
+- dewie-desk commit `2d22eef` adds the safe shadow pipeline, verified-payload
+  parser, webhook HMAC verification, durable message claims, private-note-only
+  client, metrics, synthetic tests, and safe example configuration.
+- Slice 1 is still partial: production's token/readiness checks and remaining
+  operational evidence must be reconciled before QA.
+- Slice 2's policy contract is implemented and integrated in source.
+- Slices 3 through 5 have not started.
+- The DewieOps non-template drafter still reaches an unmigrated historical
+  helper during context gathering. It must be moved onto the existing model
+  runtime before the bridge can leave shadow mode.
 
 ## Outcome
 
