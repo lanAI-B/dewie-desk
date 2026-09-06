@@ -1,5 +1,10 @@
 # dewie-desk
 
+> Modernization is in progress on `feature/desk-bridge-modernization`. The new
+> bridge defaults to shadow mode and dry-run, depends on the sibling DewieOps
+> checkout, and is not connected to QA or production. See
+> `docs/bridge-modernization-plan.md` for the staged cutover contract.
+
 Chatwoot-based support desk for ABS / Actex, with Dewie as the intelligence layer.
 
 **Design doctrine — adopt, don't own the plumbing.** The ticket pipeline, auth, agent UI,

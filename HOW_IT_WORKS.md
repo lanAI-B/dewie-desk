@@ -1,5 +1,9 @@
 # How dewie-desk works — the mental model + a debug playbook
 
+> Historical pilot notes follow. The current replacement design and its safety
+> gates are authoritative in `docs/bridge-modernization-plan.md`. The production
+> bridge has not been replaced.
+
 Written to *teach*, not just document. If you understand this page, you can operate and
 debug the desk without me.
 

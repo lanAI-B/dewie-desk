@@ -1,5 +1,5 @@
 .env
-*.pyc
+.pytest_cache/
 __pycache__/
-.venv/
-storage_data/
+*.py[cod]
+data/
