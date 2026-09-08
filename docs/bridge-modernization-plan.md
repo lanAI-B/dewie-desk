@@ -12,6 +12,9 @@ built, QA has not been changed, and production remains unchanged.
   client, metrics, synthetic tests, and safe example configuration.
 - Slice 1 is still partial: production's token/readiness checks and remaining
   operational evidence must be reconciled before QA.
+- The Compose host port is configurable; Frankie's example uses 3001 because
+  Command Center already owns 3000. A Chatwoot release tag is mandatory rather
+  than silently falling back to `latest`.
 - Slice 2's policy contract is implemented and integrated in source.
 - Slice 3's offline/QA shadow validation has not started.
 - Slice 4 is implemented in source: the non-template drafter, read-only tool

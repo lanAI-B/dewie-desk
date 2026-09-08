@@ -41,7 +41,8 @@ until the board stays sane on its own.
    docker compose run --rm base-prepare   # one-shot: create + migrate + seed DB
    docker compose up -d
    ```
-   Chatwoot is at http://localhost:3000 — create the super admin account.
+   Chatwoot uses `CHATWOOT_HOST_PORT` (3001 in the Frankie example) — create the
+   super admin account at that local URL.
 
 2. **Connect the mailbox — in the Chatwoot UI, not here.** Chatwoot configures email
    channels in-app (Inbox → Add Inbox → Email).
