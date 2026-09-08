@@ -54,6 +54,14 @@ def _increment(name: str) -> None:
         _metrics[name] += 1
 
 
+def _confidence_band(value: float) -> str:
+    if value >= 0.9:
+        return "high"
+    if value >= 0.75:
+        return "medium"
+    return "low"
+
+
 def chatwoot_client() -> ChatwootClient:
     global _client
     if _client is None:
@@ -122,6 +130,7 @@ def _decision(message: ParsedMessage):
         hints.append("message contains recognizable forwarded-mail evidence")
 
     try:
+        _increment("classifier_calls")
         classification = classify_message(
             classifier_runtime(),
             from_email=message.from_email,
@@ -166,8 +175,16 @@ def process_message(message: ParsedMessage) -> None:
     decision = _decision(message)
     _increment(f"decision_{decision.action.value}")
     _increment(f"reason_{decision.reason_code}")
+    classification = decision.classification
+    if classification:
+        _increment(f"actor_{classification.actor.value}")
+        _increment(f"intent_{classification.intent.value}")
+        _increment(f"actor_confidence_{_confidence_band(classification.actor_confidence)}")
+        _increment(f"intent_confidence_{_confidence_band(classification.intent_confidence)}")
+        _increment(f"classifier_provider_{classification.provider or 'unknown'}")
 
     if not decision.should_draft:
+        _increment("drafter_calls_avoided")
         log.info(
             "desk decision=%s reason=%s conversation=%s message=%s",
             decision.action.value,
@@ -177,6 +194,7 @@ def process_message(message: ParsedMessage) -> None:
         )
         return
     if shadow_mode():
+        _increment("drafter_calls_avoided")
         _increment("drafter_calls_avoided_shadow")
         log.info(
             "desk shadow decision=draft conversation=%s message=%s",

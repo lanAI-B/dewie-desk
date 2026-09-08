@@ -1,7 +1,7 @@
 # Desk bridge modernization plan
 
-Status: implementation started in source. No image has been built, QA has not
-been changed, and production remains unchanged.
+Status: replacement implementation continues in source. No image has been
+built, QA has not been changed, and production remains unchanged.
 
 ## Implementation progress
 
@@ -13,10 +13,12 @@ been changed, and production remains unchanged.
 - Slice 1 is still partial: production's token/readiness checks and remaining
   operational evidence must be reconciled before QA.
 - Slice 2's policy contract is implemented and integrated in source.
-- Slices 3 through 5 have not started.
-- The DewieOps non-template drafter still reaches an unmigrated historical
-  helper during context gathering. It must be moved onto the existing model
-  runtime before the bridge can leave shadow mode.
+- Slice 3's offline/QA shadow validation has not started.
+- Slice 4 is implemented in source: the non-template drafter, read-only tool
+  loop, attachment transcription, and utility extraction all consume the
+  provider-neutral DewieOps runtime. Contract coverage passes for Anthropic and
+  OpenAI, and the drafter has no provider-SDK or private DewieBrain import.
+- Slice 5 has not started.
 
 ## Outcome
 
@@ -199,6 +201,8 @@ DESK_CLASSIFIER_PROVIDER
 DESK_CLASSIFIER_MODEL
 DESK_DRAFTER_PROVIDER
 DESK_DRAFTER_MODEL
+DESK_UTILITY_PROVIDER
+DESK_UTILITY_MODEL
 DESK_CLASSIFIER_CONFIDENCE_FLOOR
 ```
 

@@ -1,7 +1,8 @@
 import sys
+from collections import Counter
 
 import main
-from dewie_brain.desk import DecisionAction, DraftDecision
+from dewie_brain.desk import Actor, Classification, DecisionAction, DraftDecision, Intent
 from parser import ParsedMessage
 
 
@@ -69,3 +70,40 @@ def test_shadow_draft_never_imports_drafter(monkeypatch):
     monkeypatch.setitem(sys.modules, "dewie_brain.drafter", None)
 
     main.process_message(message())
+
+
+def test_shadow_metrics_capture_policy_evidence_without_drafting(monkeypatch):
+    classification = Classification(
+        actor=Actor.CUSTOMER,
+        intent=Intent.ACCESS_SUPPORT,
+        actor_confidence=0.94,
+        intent_confidence=0.82,
+        provider="fake",
+        model="classifier-test",
+    )
+    monkeypatch.setattr(main, "_metrics", Counter())
+    monkeypatch.setenv("BRIDGE_SHADOW_MODE", "true")
+    monkeypatch.setattr(
+        main,
+        "_decision",
+        lambda value: DraftDecision(
+            DecisionAction.DRAFT,
+            "drafted",
+            classification=classification,
+            category="GENERAL",
+        ),
+    )
+
+    main.process_message(message())
+
+    assert main._metrics == Counter({
+        "decision_draft": 1,
+        "reason_drafted": 1,
+        "actor_customer": 1,
+        "intent_access_support": 1,
+        "actor_confidence_high": 1,
+        "intent_confidence_medium": 1,
+        "classifier_provider_fake": 1,
+        "drafter_calls_avoided": 1,
+        "drafter_calls_avoided_shadow": 1,
+    })
