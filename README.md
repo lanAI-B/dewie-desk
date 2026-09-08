@@ -37,10 +37,11 @@ until the board stays sane on its own.
 
 1. **Bring Chatwoot up** (needs Docker Desktop):
    ```
-   cp .env.example .env      # then fill SECRET_KEY_BASE, passwords, CHATWOOT_TAG
+   .\scripts\initialize-local-env.ps1  # generates ignored local app/DB secrets
    docker compose run --rm base-prepare   # one-shot: create + migrate + seed DB
    docker compose up -d
    ```
+   `base-prepare` is in the `setup` profile, so ordinary `up` will not rerun it.
    Chatwoot uses `CHATWOOT_HOST_PORT` (3001 in the Frankie example) — create the
    super admin account at that local URL.
 
