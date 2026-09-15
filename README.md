@@ -1,5 +1,10 @@
 # dewie-desk
 
+> Modernization is in progress on `feature/desk-bridge-modernization`. The new
+> bridge defaults to shadow mode and dry-run, depends on the sibling DewieOps
+> checkout, and is not connected to QA or production. See
+> `docs/bridge-modernization-plan.md` for the staged cutover contract.
+
 Chatwoot-based support desk for ABS / Actex, with Dewie as the intelligence layer.
 
 **Design doctrine — adopt, don't own the plumbing.** The ticket pipeline, auth, agent UI,
@@ -32,11 +37,13 @@ until the board stays sane on its own.
 
 1. **Bring Chatwoot up** (needs Docker Desktop):
    ```
-   cp .env.example .env      # then fill SECRET_KEY_BASE, passwords, CHATWOOT_TAG
+   .\scripts\initialize-local-env.ps1  # generates ignored local app/DB secrets
    docker compose run --rm base-prepare   # one-shot: create + migrate + seed DB
    docker compose up -d
    ```
-   Chatwoot is at http://localhost:3000 — create the super admin account.
+   `base-prepare` is in the `setup` profile, so ordinary `up` will not rerun it.
+   Chatwoot uses `CHATWOOT_HOST_PORT` (3001 in the Frankie example) — create the
+   super admin account at that local URL.
 
 2. **Connect the mailbox — in the Chatwoot UI, not here.** Chatwoot configures email
    channels in-app (Inbox → Add Inbox → Email).
@@ -59,10 +66,13 @@ until the board stays sane on its own.
    uvicorn main:app --port 8624
    ```
    In Chatwoot: Settings → Integrations → Webhooks → add
-   `http://host.docker.internal:8624/webhook` for `message_created`,
-   `conversation_created`. Create an access token (Profile → Access Token) and put it
+   `http://host.docker.internal:8624/webhook` for `message_created` and
+   `conversation_updated`. Create an access token (Profile → Access Token) and put it
    in `.env` as `CHATWOOT_API_TOKEN`.
-   The bridge posts drafts as **private notes only** — SEND stays a human click.
+   Incoming messages are recorded but do not classify or draft automatically. Add
+   the `dewie-draft` label to request one draft for the newest customer message.
+   After a private draft note is posted, the bridge removes the label; a later
+   customer reply requires a fresh label action. SEND stays a human click.
 
 ## Who unblocks what
 

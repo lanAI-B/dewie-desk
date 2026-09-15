@@ -4,8 +4,10 @@
 # Pin CHATWOOT_TAG in .env before first boot (see README) — do not run :latest in anger.
 
 x-base: &base
-  image: chatwoot/chatwoot:${CHATWOOT_TAG:-latest}
+  image: chatwoot/chatwoot:${CHATWOOT_TAG:?Set CHATWOOT_TAG to a reviewed release}
   env_file: .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   volumes:
     - storage_data:/app/storage
   restart: always
@@ -15,6 +17,7 @@ services:
   #   docker compose run --rm base-prepare
   base-prepare:
     <<: *base
+    profiles: [setup]
     depends_on: [postgres, redis]
     environment:
       - NODE_ENV=production
@@ -28,7 +31,7 @@ services:
     <<: *base
     depends_on: [postgres, redis]
     ports:
-      - '127.0.0.1:3000:3000'
+      - '${CHATWOOT_BIND_ADDRESS:-127.0.0.1}:${CHATWOOT_HOST_PORT:-3000}:3000'
     environment:
       - NODE_ENV=production
       - RAILS_ENV=production
