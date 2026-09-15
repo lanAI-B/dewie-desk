@@ -3,6 +3,7 @@ from collections import Counter
 from types import SimpleNamespace
 
 import main
+from chatwoot import ConversationResult, LabelResult
 from dewie_brain.desk import Actor, Classification, DecisionAction, DraftDecision, Intent
 from parser import ParsedAttachment, ParsedMessage
 
@@ -133,3 +134,138 @@ def test_draft_request_includes_extracted_attachment_text(monkeypatch):
     main.process_message(value)
 
     assert captured["request"].image_text == "PDF text"
+
+
+def api_message(message_id, body):
+    return {
+        "id": message_id,
+        "account_id": 1,
+        "inbox_id": 3,
+        "message_type": 0,
+        "private": False,
+        "content": body,
+        "sender": {"type": "contact", "email": "person@example.com"},
+        "content_attributes": {"email": {"subject": "Question"}},
+    }
+
+
+class CommandStore:
+    def __init__(self):
+        self.claimed = set()
+        self.released = []
+        self.recorded = []
+
+    def record_inbound(self, value):
+        self.recorded.append(value.message_id)
+        return True
+
+    def claim(self, key):
+        if key in self.claimed:
+            return False
+        self.claimed.add(key)
+        return True
+
+    def release(self, key):
+        self.released.append(key)
+        self.claimed.discard(key)
+
+
+class CommandClient:
+    def __init__(self, messages, remove_ok=True):
+        self.messages = messages
+        self.remove_ok = remove_ok
+        self.removed = []
+
+    def get_conversation(self, conversation_id):
+        return ConversationResult(
+            True,
+            tuple(self.messages),
+            {
+                "contact": {"email": "person@example.com"},
+                "additional_attributes": {"mail_subject": "Question"},
+            },
+            200,
+            "fetched",
+        )
+
+    def remove_label(self, conversation_id, label):
+        self.removed.append((conversation_id, label))
+        return LabelResult(self.remove_ok, (), 200 if self.remove_ok else 500)
+
+
+def test_relabeling_same_inbound_does_not_redraft(monkeypatch):
+    store = CommandStore()
+    client = CommandClient([api_message(42, "First")])
+    drafted = []
+    monkeypatch.setattr(main, "dedup_store", lambda: store)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+
+    main.process_label_command(7, 1, 42)
+    main.process_label_command(7, 1, 42)
+
+    assert drafted == [42]
+    assert client.removed == [(7, "dewie-draft")]
+    assert store.claimed == {"conversation:7:message:42:action:draft"}
+
+
+def test_two_successive_customer_messages_each_require_and_receive_fresh_command(monkeypatch):
+    store = CommandStore()
+    client = CommandClient([api_message(42, "First")])
+    drafted = []
+    monkeypatch.setattr(main, "dedup_store", lambda: store)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+
+    main.process_label_command(7, 1, 42)
+    client.messages.append(api_message(43, "Second"))
+    main.process_label_command(7, 1, 43)
+
+    assert drafted == [42, 43]
+    assert client.removed == [(7, "dewie-draft"), (7, "dewie-draft")]
+    assert store.claimed == {
+        "conversation:7:message:42:action:draft",
+        "conversation:7:message:43:action:draft",
+    }
+
+
+def test_failed_draft_releases_action_for_a_fresh_human_command(monkeypatch):
+    store = CommandStore()
+    client = CommandClient([api_message(42, "First")])
+    monkeypatch.setattr(main, "dedup_store", lambda: store)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(main, "process_message", lambda value: False)
+
+    main.process_label_command(7, 1, 42)
+
+    assert store.claimed == set()
+    assert store.released == ["conversation:7:message:42:action:draft"]
+    assert client.removed == []
+
+
+def test_posted_draft_stays_deduplicated_when_label_removal_fails(monkeypatch):
+    store = CommandStore()
+    client = CommandClient([api_message(42, "First")], remove_ok=False)
+    drafted = []
+    monkeypatch.setattr(main, "dedup_store", lambda: store)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+
+    main.process_label_command(7, 1, 42)
+    main.process_label_command(7, 1, 42)
+
+    assert drafted == [42]
+    assert store.claimed == {"conversation:7:message:42:action:draft"}
+
+
+def test_later_reply_cannot_ride_an_older_label_command(monkeypatch):
+    store = CommandStore()
+    client = CommandClient([api_message(42, "First"), api_message(43, "Later")])
+    drafted = []
+    monkeypatch.setattr(main, "dedup_store", lambda: store)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+
+    main.process_label_command(7, 1, 42)
+
+    assert drafted == [42]

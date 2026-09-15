@@ -43,6 +43,14 @@ def _dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _message_type(value: Any) -> str:
+    if isinstance(value, int):
+        return {0: "incoming", 1: "outgoing", 2: "activity", 3: "template"}.get(
+            value, str(value)
+        )
+    return str(value or "").strip().lower()
+
+
 def _sender_type(conversation: dict, sender: dict) -> str:
     direct = str(sender.get("type") or "").strip().lower()
     if direct:
@@ -122,7 +130,7 @@ def parse_message_created(payload: dict) -> ParsedMessage:
         subject=subject,
         subject_source=subject_source,
         body=str(payload.get("content") or "").strip(),
-        message_type=str(payload.get("message_type") or "").strip().lower(),
+        message_type=_message_type(payload.get("message_type")),
         content_type=str(payload.get("content_type") or "").strip().lower(),
         attachments=_attachments(payload),
         is_private=bool(payload.get("private")),
@@ -131,6 +139,86 @@ def parse_message_created(payload: dict) -> ParsedMessage:
     )
     parsed.should_process, parsed.skip_reason = _transport_gate(parsed)
     return parsed
+
+
+def draft_label_added(payload: dict, label: str) -> int | None:
+    """Return the conversation ID only for an explicit absent-to-present label change."""
+    payload = _dict(payload)
+    if payload.get("event") != "conversation_updated":
+        return None
+    for change in payload.get("changed_attributes") or []:
+        values = _dict(_dict(change).get("label_list"))
+        previous = values.get("previous_value")
+        current = values.get("current_value")
+        if not isinstance(previous, list) or not isinstance(current, list):
+            continue
+        if label not in previous and label in current:
+            try:
+                return int(payload.get("id"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def newest_customer_message(
+    messages: list[dict],
+    *,
+    conversation_id: int,
+    account_id: int = 0,
+    meta: dict | None = None,
+    through_message_id: int | None = None,
+) -> ParsedMessage | None:
+    """Normalize the newest non-private incoming contact message from an API result."""
+    meta = _dict(meta)
+    contact = _dict(meta.get("contact"))
+    if isinstance(contact.get("payload"), list) and contact["payload"]:
+        contact = _dict(contact["payload"][0])
+    conversation_attributes = _dict(meta.get("additional_attributes"))
+
+    candidates = []
+    for raw in messages if isinstance(messages, list) else []:
+        value = _dict(raw)
+        sender = _dict(value.get("sender"))
+        sender_type = str(sender.get("type") or value.get("sender_type") or "").lower()
+        if _message_type(value.get("message_type")) != "incoming":
+            continue
+        if bool(value.get("private")) or (sender_type and sender_type != "contact"):
+            continue
+        try:
+            message_id = int(value.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if through_message_id is not None and message_id > through_message_id:
+            continue
+        candidates.append((message_id, value, sender))
+    if not candidates:
+        return None
+
+    message_id, value, sender = max(candidates, key=lambda item: item[0])
+    subject, subject_source = _subject(
+        value,
+        {"additional_attributes": conversation_attributes},
+    )
+    parsed = ParsedMessage(
+        event="message_created",
+        account_id=int(value.get("account_id") or account_id or 0),
+        conversation_id=conversation_id,
+        inbox_id=value.get("inbox_id"),
+        message_id=message_id,
+        from_email=str(sender.get("email") or contact.get("email") or "").strip(),
+        from_name=str(sender.get("name") or contact.get("name") or "").strip(),
+        sender_type=str(sender.get("type") or value.get("sender_type") or "contact").lower(),
+        subject=subject,
+        subject_source=subject_source,
+        body=str(value.get("content") or value.get("processed_message_content") or "").strip(),
+        message_type="incoming",
+        content_type=str(value.get("content_type") or "").strip().lower(),
+        attachments=_attachments(value),
+        is_private=bool(value.get("private")),
+        raw=value,
+    )
+    parsed.should_process, parsed.skip_reason = _transport_gate(parsed)
+    return parsed if parsed.should_process else None
 
 
 def _transport_gate(message: ParsedMessage) -> tuple[bool, str]:
@@ -148,4 +236,6 @@ def _transport_gate(message: ParsedMessage) -> tuple[bool, str]:
         return False, "missing_sender_email"
     if not message.conversation_id:
         return False, "missing_conversation_id"
+    if message.message_id is None:
+        return False, "missing_message_id"
     return True, ""

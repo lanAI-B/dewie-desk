@@ -1,4 +1,4 @@
-from parser import parse_message_created
+from parser import draft_label_added, newest_customer_message, parse_message_created
 
 
 def payload(**updates):
@@ -92,3 +92,65 @@ def test_non_customer_events_fail_closed_at_transport_gate():
 def test_garbage_payload_does_not_raise_or_process():
     parsed = parse_message_created({"conversation": "bad", "sender": []})
     assert not parsed.should_process
+
+
+def test_draft_label_requires_explicit_absent_to_present_transition():
+    base = {"event": "conversation_updated", "id": 7}
+
+    assert draft_label_added({
+        **base,
+        "changed_attributes": [{
+            "label_list": {
+                "previous_value": ["support"],
+                "current_value": ["support", "dewie-draft"],
+            }
+        }],
+    }, "dewie-draft") == 7
+    assert draft_label_added({
+        **base,
+        "labels": ["dewie-draft"],
+        "changed_attributes": [{"status": {"previous_value": "open", "current_value": "pending"}}],
+    }, "dewie-draft") is None
+    assert draft_label_added({
+        **base,
+        "changed_attributes": [{
+            "label_list": {
+                "previous_value": ["dewie-draft"],
+                "current_value": ["dewie-draft"],
+            }
+        }],
+    }, "dewie-draft") is None
+
+
+def test_newest_customer_message_ignores_agent_activity_and_private_notes():
+    messages = [
+        {"id": 40, "message_type": 0, "content": "First", "sender": {"type": "contact"}},
+        {"id": 41, "message_type": 1, "content": "Agent reply", "sender": {"type": "user"}},
+        {"id": 42, "message_type": 0, "private": True, "content": "Private"},
+        {"id": 43, "message_type": 2, "content": "Assigned"},
+        {"id": 44, "message_type": 0, "content": "Second", "sender": {"type": "contact"}},
+    ]
+
+    parsed = newest_customer_message(
+        messages,
+        conversation_id=7,
+        account_id=1,
+        meta={
+            "contact": {"email": "person@example.com", "name": "Person"},
+            "additional_attributes": {"mail_subject": "Question"},
+        },
+    )
+
+    assert parsed.message_id == 44
+    assert parsed.body == "Second"
+    assert parsed.from_email == "person@example.com"
+    assert parsed.subject == "Question"
+
+    bounded = newest_customer_message(
+        messages,
+        conversation_id=7,
+        account_id=1,
+        meta={"contact": {"email": "person@example.com"}},
+        through_message_id=43,
+    )
+    assert bounded.message_id == 40

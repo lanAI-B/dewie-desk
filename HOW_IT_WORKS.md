@@ -39,14 +39,21 @@ The brain never imports Chatwoot; the bridge never drafts. That's the whole desi
 
 1. Customer emails the mailbox. **Chatwoot polls it over IMAP (~every 15 min)** and turns
    the email into a **conversation** (ticket).
-2. That creation fires a **`message_created` webhook** → `POST` to the bridge's `/webhook`.
-3. The bridge builds a `DraftRequest` (sender, subject, body) and calls
-   `dewie_brain.drafter.draft_reply(...)` — the *same* function the old desk and the
-   4x-daily runner use. One brain, three surfaces.
-4. The brain does KB search, read-only order/customer lookups, and an Opus draft pass,
+2. That creation fires a **`message_created` webhook** → `POST` to the bridge's
+   `/webhook`. The bridge normalizes and durably records it, but does not classify
+   or draft it.
+3. A human adds the **`dewie-draft`** label. The resulting
+   **`conversation_updated` webhook** is the one-shot draft command.
+4. The bridge fetches the current conversation, selects its newest incoming
+   customer message, and calls `dewie_brain.drafter.draft_reply(...)` through the
+   decision gate. Webhook retries and relabeling the same message cannot draft it
+   twice.
+5. The brain does KB search, read-only order/customer lookups, and a draft pass,
    then returns the reply text + metadata.
-5. The bridge posts that as a **private note** on the ticket (or, with `BRIDGE_DRY_RUN=true`,
-   just logs it). **Sending the reply is always a human click in Chatwoot.**
+6. The bridge posts that as a **private note** and removes `dewie-draft`. A later
+   customer reply requires another human label action. With shadow/dry-run enabled,
+   no note is posted and the command is not reported as consumed. **Sending the
+   reply is always a human click in Chatwoot.**
 
 ## Operating it
 

@@ -26,6 +26,15 @@ built, QA has not been changed, and production remains unchanged.
   extraction or the canonical provider-neutral image transcription path, audio
   is labeled but not transcribed, and extracted text is card-redacted before it
   reaches `DraftRequest`. Live payload validation remains part of Slice 3.
+- Task #2707's label-trigger seam is implemented in source: `message_created`
+  only normalizes and durably records inbound messages; an explicit
+  absent-to-present `dewie-draft` label change fetches the current conversation
+  and requests one draft for its newest customer message. The successful path
+  removes the command label, and durable action deduplication prevents webhook
+  retries, sticky labels, or relabeling from redrafting the same inbound message.
+  The command snapshots the newest already-recorded inbound ID before background
+  work, so a later customer reply cannot ride an older label action.
+  Live label-event and permission validation remains part of Slice 3.
 - Slice 5 has not started.
 
 ## Outcome
@@ -114,6 +123,9 @@ Acceptance gate:
 ## Slice 2: make draft eligibility explicit
 
 Add a typed decision result before any expensive drafting work:
+
+The decision pipeline is invoked only after a human adds the one-shot
+`dewie-draft` command label. Message ingestion itself performs no model call.
 
 ```text
 DraftDecision

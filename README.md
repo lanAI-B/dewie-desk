@@ -66,10 +66,13 @@ until the board stays sane on its own.
    uvicorn main:app --port 8624
    ```
    In Chatwoot: Settings → Integrations → Webhooks → add
-   `http://host.docker.internal:8624/webhook` for `message_created`,
-   `conversation_created`. Create an access token (Profile → Access Token) and put it
+   `http://host.docker.internal:8624/webhook` for `message_created` and
+   `conversation_updated`. Create an access token (Profile → Access Token) and put it
    in `.env` as `CHATWOOT_API_TOKEN`.
-   The bridge posts drafts as **private notes only** — SEND stays a human click.
+   Incoming messages are recorded but do not classify or draft automatically. Add
+   the `dewie-draft` label to request one draft for the newest customer message.
+   After a private draft note is posted, the bridge removes the label; a later
+   customer reply requires a fresh label action. SEND stays a human click.
 
 ## Who unblocks what
 

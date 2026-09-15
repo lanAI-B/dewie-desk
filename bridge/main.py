@@ -21,7 +21,12 @@ except ImportError:
 
 from chatwoot import ChatwootClient
 from attachments import extract_attachment_text
-from parser import ParsedMessage, parse_message_created
+from parser import (
+    ParsedMessage,
+    draft_label_added,
+    newest_customer_message,
+    parse_message_created,
+)
 from state import DedupStore
 import webhook_auth
 
@@ -35,6 +40,7 @@ _runtime = None
 _state: DedupStore | None = None
 _metrics: Counter = Counter()
 _metrics_lock = threading.Lock()
+DRAFT_LABEL = "dewie-draft"
 
 
 def _enabled(name: str, default: bool) -> bool:
@@ -98,17 +104,19 @@ def dedup_store() -> DedupStore:
     return _state
 
 
-def _claim_key(message: ParsedMessage) -> str:
-    if message.message_id is not None:
-        return f"account:{message.account_id or 0}:message:{message.message_id}"
-    fallback = "\x1f".join((
-        str(message.account_id or 0),
-        str(message.conversation_id or 0),
-        message.from_email,
-        message.subject,
-        message.body,
-    )).encode("utf-8", "surrogateescape")
-    return "fallback:" + hashlib.sha256(fallback).hexdigest()
+def _command_key(payload: dict) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8", "surrogateescape"
+    )
+    conversation_id = payload.get("id") or 0
+    return f"conversation:{conversation_id}:label-add:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def _draft_action_key(message: ParsedMessage) -> str:
+    return (
+        f"conversation:{message.conversation_id or 0}:"
+        f"message:{message.message_id or 0}:action:draft"
+    )
 
 
 def _decision(message: ParsedMessage):
@@ -172,7 +180,8 @@ def _private_note(result, decision) -> str:
     )
 
 
-def process_message(message: ParsedMessage) -> None:
+def process_message(message: ParsedMessage) -> bool:
+    """Run one requested draft action; true means a private note was posted."""
     decision = _decision(message)
     _increment(f"decision_{decision.action.value}")
     _increment(f"reason_{decision.reason_code}")
@@ -193,7 +202,7 @@ def process_message(message: ParsedMessage) -> None:
             message.conversation_id,
             message.message_id,
         )
-        return
+        return False
     if shadow_mode():
         _increment("drafter_calls_avoided")
         _increment("drafter_calls_avoided_shadow")
@@ -202,7 +211,7 @@ def process_message(message: ParsedMessage) -> None:
             message.conversation_id,
             message.message_id,
         )
-        return
+        return False
 
     from dewie_brain.drafter import DraftRequest, draft_reply
 
@@ -224,19 +233,20 @@ def process_message(message: ParsedMessage) -> None:
             message.message_id,
             type(exc).__name__,
         )
-        return
+        return False
     if result.unusable_reason or not result.draft_body:
         _increment("draft_unusable")
-        return
+        return False
     if dry_run():
         _increment("notes_avoided_dry_run")
-        return
+        return False
 
     posted = chatwoot_client().post_private_note(
         int(message.conversation_id), _private_note(result, decision)
     )
     if posted.ok:
         _increment("private_notes_posted")
+        return True
     else:
         _increment("note_post_failed")
         log.error(
@@ -245,6 +255,59 @@ def process_message(message: ParsedMessage) -> None:
             message.message_id,
             posted.status_code,
             posted.detail,
+        )
+        return False
+
+
+def process_label_command(
+    conversation_id: int,
+    account_id: int,
+    through_message_id: int,
+) -> None:
+    """Fetch current state and execute one draft command against its newest inbound."""
+    conversation = chatwoot_client().get_conversation(conversation_id)
+    if not conversation.ok:
+        _increment("conversation_fetch_failed")
+        log.error(
+            "draft command fetch failed conversation=%s status=%s detail=%s",
+            conversation_id,
+            conversation.status_code,
+            conversation.detail,
+        )
+        return
+
+    message = newest_customer_message(
+        list(conversation.messages),
+        conversation_id=conversation_id,
+        account_id=account_id,
+        meta=conversation.meta,
+        through_message_id=through_message_id,
+    )
+    if message is None:
+        _increment("draft_command_no_customer_message")
+        return
+
+    dedup_store().record_inbound(message)
+    action_key = _draft_action_key(message)
+    if not dedup_store().claim(action_key):
+        _increment("duplicate_draft_action")
+        return
+
+    _increment("draft_commands")
+    if not process_message(message):
+        dedup_store().release(action_key)
+        return
+
+    consumed = chatwoot_client().remove_label(conversation_id, DRAFT_LABEL)
+    if consumed.ok:
+        _increment("draft_commands_consumed")
+    else:
+        _increment("draft_command_consume_failed")
+        log.error(
+            "draft posted but command label removal failed conversation=%s status=%s detail=%s",
+            conversation_id,
+            consumed.status_code,
+            consumed.detail,
         )
 
 
@@ -279,20 +342,54 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks) 
         _increment("transport_invalid_json")
         raise HTTPException(status_code=400, detail="invalid_json")
 
-    message = parse_message_created(payload)
-    if not message.should_process:
-        _increment("transport_filtered")
-        _increment(f"reason_{message.skip_reason}")
-        return {"accepted": False, "reason": message.skip_reason}
+    event = payload.get("event") if isinstance(payload, dict) else None
+    if event == "message_created":
+        message = parse_message_created(payload)
+        if not message.should_process:
+            _increment("transport_filtered")
+            _increment(f"reason_{message.skip_reason}")
+            return {"accepted": False, "reason": message.skip_reason}
+        if not dedup_store().record_inbound(message):
+            _increment("duplicate_message")
+            return {"accepted": False, "reason": "duplicate_message"}
+        _increment("inbound_recorded")
+        return {
+            "accepted": True,
+            "action": "recorded",
+            "conversation": message.conversation_id,
+            "message": message.message_id,
+        }
 
-    if not dedup_store().claim(_claim_key(message)):
-        _increment("duplicate_message")
-        return {"accepted": False, "reason": "duplicate_message"}
+    if event == "conversation_updated":
+        conversation_id = draft_label_added(payload, DRAFT_LABEL)
+        if conversation_id is None:
+            _increment("transport_filtered")
+            _increment("reason_no_draft_label_added")
+            return {"accepted": False, "reason": "no_draft_label_added"}
+        through_message_id = dedup_store().latest_inbound_id(conversation_id)
+        if through_message_id is None:
+            _increment("draft_command_no_recorded_inbound")
+            return {"accepted": False, "reason": "no_recorded_inbound"}
+        if not dedup_store().claim(_command_key(payload)):
+            _increment("duplicate_label_command")
+            return {"accepted": False, "reason": "duplicate_label_command"}
+        account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
+        try:
+            account_id = int(account.get("id") or chatwoot_client().account_id)
+        except (TypeError, ValueError):
+            account_id = 0
+        background_tasks.add_task(
+            process_label_command,
+            conversation_id,
+            account_id,
+            through_message_id,
+        )
+        return {
+            "accepted": True,
+            "action": "draft_requested",
+            "conversation": conversation_id,
+        }
 
-    _increment("screened")
-    background_tasks.add_task(process_message, message)
-    return {
-        "accepted": True,
-        "conversation": message.conversation_id,
-        "message": message.message_id,
-    }
+    _increment("transport_filtered")
+    _increment("reason_unsupported_event")
+    return {"accepted": False, "reason": "unsupported_event"}
