@@ -20,6 +20,7 @@ except ImportError:
     pass
 
 from chatwoot import ChatwootClient
+from attachments import extract_attachment_text
 from parser import ParsedMessage, parse_message_created
 from state import DedupStore
 import webhook_auth
@@ -207,11 +208,13 @@ def process_message(message: ParsedMessage) -> None:
 
     _increment("drafter_calls")
     try:
+        attachment_text = extract_attachment_text(message.attachments, logger=log)
         result = draft_reply(DraftRequest(
             category=decision.category or "GENERAL",
             from_email=message.from_email,
             subject=message.subject,
             body=message.body,
+            image_text=attachment_text,
         ))
     except Exception as exc:
         _increment("draft_failed")

@@ -1,9 +1,10 @@
 import sys
 from collections import Counter
+from types import SimpleNamespace
 
 import main
 from dewie_brain.desk import Actor, Classification, DecisionAction, DraftDecision, Intent
-from parser import ParsedMessage
+from parser import ParsedAttachment, ParsedMessage
 
 
 def message(from_email="person@example.com"):
@@ -107,3 +108,28 @@ def test_shadow_metrics_capture_policy_evidence_without_drafting(monkeypatch):
         "drafter_calls_avoided": 1,
         "drafter_calls_avoided_shadow": 1,
     })
+
+
+def test_draft_request_includes_extracted_attachment_text(monkeypatch):
+    captured = {}
+    attachment = ParsedAttachment("application/pdf", "order.pdf", "https://desk/order.pdf")
+    value = message()
+    value.attachments = [attachment]
+    monkeypatch.setenv("BRIDGE_SHADOW_MODE", "false")
+    monkeypatch.setenv("BRIDGE_DRY_RUN", "true")
+    monkeypatch.setattr(
+        main,
+        "_decision",
+        lambda message: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+    )
+    monkeypatch.setattr(main, "extract_attachment_text", lambda values, logger: "PDF text")
+
+    def draft_reply(request):
+        captured["request"] = request
+        return SimpleNamespace(unusable_reason=None, draft_body="Draft")
+
+    monkeypatch.setattr("dewie_brain.drafter.draft_reply", draft_reply)
+
+    main.process_message(value)
+
+    assert captured["request"].image_text == "PDF text"

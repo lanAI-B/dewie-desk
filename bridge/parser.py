@@ -6,6 +6,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+@dataclass(frozen=True)
+class ParsedAttachment:
+    """The transport fields needed to retrieve one Chatwoot attachment."""
+
+    file_type: str = ""
+    name: str = ""
+    data_url: str = ""
+
+
 @dataclass
 class ParsedMessage:
     event: str
@@ -22,6 +31,7 @@ class ParsedMessage:
     body: str = ""
     message_type: str = ""
     content_type: str = ""
+    attachments: list[ParsedAttachment] = field(default_factory=list)
     is_private: bool = False
     channel: str = ""
     should_process: bool = False
@@ -65,6 +75,32 @@ def _subject(payload: dict, conversation: dict) -> tuple[str, str]:
     return "", ""
 
 
+def _attachments(payload: dict) -> list[ParsedAttachment]:
+    found = []
+    raw_attachments = payload.get("attachments")
+    if not isinstance(raw_attachments, list):
+        return found
+    for value in raw_attachments:
+        attachment = _dict(value)
+        if not attachment:
+            continue
+        found.append(ParsedAttachment(
+            file_type=str(
+                attachment.get("file_type")
+                or attachment.get("content_type")
+                or ""
+            ).strip().lower(),
+            name=str(
+                attachment.get("file_name")
+                or attachment.get("name")
+                or attachment.get("filename")
+                or ""
+            ).strip(),
+            data_url=str(attachment.get("data_url") or "").strip(),
+        ))
+    return found
+
+
 def parse_message_created(payload: dict) -> ParsedMessage:
     payload = _dict(payload)
     conversation = _dict(payload.get("conversation"))
@@ -88,6 +124,7 @@ def parse_message_created(payload: dict) -> ParsedMessage:
         body=str(payload.get("content") or "").strip(),
         message_type=str(payload.get("message_type") or "").strip().lower(),
         content_type=str(payload.get("content_type") or "").strip().lower(),
+        attachments=_attachments(payload),
         is_private=bool(payload.get("private")),
         channel=str(conversation.get("channel") or "").strip(),
         raw=payload,
@@ -105,7 +142,7 @@ def _transport_gate(message: ParsedMessage) -> tuple[bool, str]:
         return False, "private_note"
     if message.sender_type and message.sender_type != "contact":
         return False, "not_contact"
-    if not message.body:
+    if not message.body and not message.attachments:
         return False, "empty_content"
     if not message.from_email:
         return False, "missing_sender_email"

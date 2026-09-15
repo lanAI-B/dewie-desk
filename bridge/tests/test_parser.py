@@ -45,6 +45,33 @@ def test_conversation_subject_is_a_last_resort():
     assert parse_message_created(value).subject == "Fallback"
 
 
+def test_attachments_are_normalized_from_chatwoot_shape():
+    value = payload()
+    value["attachments"] = [{
+        "file_type": "image",
+        "file_name": "grade-slip.png",
+        "data_url": "https://desk.example/rails/active_storage/blob/image",
+    }]
+
+    parsed = parse_message_created(value)
+
+    assert len(parsed.attachments) == 1
+    assert parsed.attachments[0].file_type == "image"
+    assert parsed.attachments[0].name == "grade-slip.png"
+    assert parsed.attachments[0].data_url.endswith("/image")
+
+
+def test_attachment_only_email_is_processable():
+    value = payload(content="")
+    value["attachments"] = [{
+        "file_type": "application/pdf",
+        "name": "order.pdf",
+        "data_url": "https://desk.example/order.pdf",
+    }]
+
+    assert parse_message_created(value).should_process
+
+
 def test_non_customer_events_fail_closed_at_transport_gate():
     cases = [
         (payload(event="conversation_created"), "not_message_created"),

@@ -21,6 +21,11 @@ built, QA has not been changed, and production remains unchanged.
   loop, attachment transcription, and utility extraction all consume the
   provider-neutral DewieOps runtime. Contract coverage passes for Anthropic and
   OpenAI, and the drafter has no provider-SDK or private DewieBrain import.
+- Task #2708's local attachment seam is implemented in source: Chatwoot
+  attachment references are normalized, bounded downloads feed local PDF text
+  extraction or the canonical provider-neutral image transcription path, audio
+  is labeled but not transcribed, and extracted text is card-redacted before it
+  reaches `DraftRequest`. Live payload validation remains part of Slice 3.
 - Slice 5 has not started.
 
 ## Outcome
