@@ -6,6 +6,8 @@
 x-base: &base
   image: chatwoot/chatwoot:${CHATWOOT_TAG:?Set CHATWOOT_TAG to a reviewed release}
   env_file: .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   volumes:
     - storage_data:/app/storage
   restart: always
