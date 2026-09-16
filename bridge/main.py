@@ -120,7 +120,14 @@ def _draft_action_key(message: ParsedMessage) -> str:
     )
 
 
-def _decision(message: ParsedMessage):
+def _decision(message: ParsedMessage, *, classify=None):
+    """Decide one message; ``classify`` overrides the live classifier call.
+
+    The override exists for offline shadow replay, which has to reach this exact
+    policy path without spending a model call. It takes the same keyword
+    arguments as ``classify_message`` minus the runtime, and raising from it is
+    the supported way to represent a classifier failure.
+    """
     from dewie_brain.desk import (
         classify_message,
         decide_draft,
@@ -141,13 +148,21 @@ def _decision(message: ParsedMessage):
 
     try:
         _increment("classifier_calls")
-        classification = classify_message(
-            classifier_runtime(),
-            from_email=message.from_email,
-            subject=message.subject,
-            body=message.body,
-            hints=hints,
-        )
+        if classify is None:
+            classification = classify_message(
+                classifier_runtime(),
+                from_email=message.from_email,
+                subject=message.subject,
+                body=message.body,
+                hints=hints,
+            )
+        else:
+            classification = classify(
+                from_email=message.from_email,
+                subject=message.subject,
+                body=message.body,
+                hints=hints,
+            )
     except Exception as exc:
         log.warning(
             "classification failed conversation=%s message=%s error=%s",
@@ -181,9 +196,9 @@ def _private_note(result, decision) -> str:
     )
 
 
-def process_message(message: ParsedMessage) -> bool:
+def process_message(message: ParsedMessage, *, classify=None) -> bool:
     """Run one requested draft action; true means a private note was posted."""
-    decision = _decision(message)
+    decision = _decision(message, classify=classify)
     _increment(f"decision_{decision.action.value}")
     _increment(f"reason_{decision.reason_code}")
     classification = decision.classification
@@ -312,6 +327,30 @@ def process_label_command(
         )
 
 
+def ingest_message_created(payload: dict) -> tuple[ParsedMessage, dict]:
+    """Screen and durably record one ``message_created`` payload.
+
+    Returned as a pair so offline shadow replay can reach the parsed message and
+    the transport verdict through the same code the webhook route runs, rather
+    than re-implementing the gate and drifting from it.
+    """
+    message = parse_message_created(payload)
+    if not message.should_process:
+        _increment("transport_filtered")
+        _increment(f"reason_{message.skip_reason}")
+        return message, {"accepted": False, "reason": message.skip_reason}
+    if not dedup_store().record_inbound(message):
+        _increment("duplicate_message")
+        return message, {"accepted": False, "reason": "duplicate_message"}
+    _increment("inbound_recorded")
+    return message, {
+        "accepted": True,
+        "action": "recorded",
+        "conversation": message.conversation_id,
+        "message": message.message_id,
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     with _metrics_lock:
@@ -346,21 +385,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks) 
 
     event = payload.get("event") if isinstance(payload, dict) else None
     if event == "message_created":
-        message = parse_message_created(payload)
-        if not message.should_process:
-            _increment("transport_filtered")
-            _increment(f"reason_{message.skip_reason}")
-            return {"accepted": False, "reason": message.skip_reason}
-        if not dedup_store().record_inbound(message):
-            _increment("duplicate_message")
-            return {"accepted": False, "reason": "duplicate_message"}
-        _increment("inbound_recorded")
-        return {
-            "accepted": True,
-            "action": "recorded",
-            "conversation": message.conversation_id,
-            "message": message.message_id,
-        }
+        return ingest_message_created(payload)[1]
 
     if event == "conversation_updated":
         conversation_id = draft_label_added(payload, DRAFT_LABEL)

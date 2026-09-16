@@ -16,7 +16,16 @@ built, QA has not been changed, and production remains unchanged.
   Command Center already owns 3000. A Chatwoot release tag is mandatory rather
   than silently falling back to `latest`.
 - Slice 2's policy contract is implemented and integrated in source.
-- Slice 3's offline/QA shadow validation has not started.
+- Slice 3's OFFLINE half is done; its QA half has not started. A sanitized
+  28-case corpus replays through the real transport gate, the real durable dedup
+  store and the real DewieOps policy with no model call, and produces the
+  aggregate the review report requires. Result and limits are in
+  `docs/shadow-replay-offline.md`; the replay is `bridge/shadow.py` and runs in
+  the suite as `bridge/tests/test_shadow.py`. Headline: the replacement
+  authorizes 12 drafts where the bridge in production today would authorize 19,
+  and authorizes none that it refuses. The corpus RECORDS each classification
+  rather than computing it, so this is evidence about the policy and not about
+  the classifier - that half still needs a running Chatwoot and a test mailbox.
 - Slice 4 is implemented in source: the non-template drafter, read-only tool
   loop, attachment transcription, and utility extraction all consume the
   provider-neutral DewieOps runtime. Contract coverage passes for Anthropic and
@@ -234,7 +243,10 @@ Acceptance gate:
 Run the new policy without changing the live desk:
 
 1. Replay sanitized representative fixtures through both the current and new
-   decision functions.
+   decision functions. **Done offline** - see `docs/shadow-replay-offline.md`.
+   The current bridge's rule is transcribed rather than imported, because
+   `dewie-desk` must keep no import path into DewieBrain (Slice 1 gate); the
+   transcription names its source revision and must be re-checked against it.
 2. Run the new bridge in an isolated QA/shadow configuration.
 3. In shadow mode, record the proposed decision and reason only. Do not call the
    drafter and do not post notes.
@@ -251,10 +263,13 @@ The review report must show:
 
 Acceptance gate:
 
-- No system or notification-only sample is draftable.
+- No system or notification-only sample is draftable. **Passing offline.**
 - Unknown and low-confidence samples consistently reach human review.
-- Legitimate customer requests remain draftable.
-- Lana approves the policy based on the shadow evidence.
+  **Passing offline.**
+- Legitimate customer requests remain draftable. **Passing offline.**
+- Lana approves the policy based on the shadow evidence. **Not met** - the
+  offline half cannot support this, because the corpus supplies the
+  classifications rather than the classifier.
 
 ## Slice 4: provider-neutral desk models
 

@@ -55,7 +55,7 @@ def test_triage_path_never_imports_drafter(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(DecisionAction.TRIAGE, "low_confidence"),
+        lambda value, **_: DraftDecision(DecisionAction.TRIAGE, "low_confidence"),
     )
     monkeypatch.setitem(sys.modules, "dewie_brain.drafter", None)
 
@@ -67,7 +67,7 @@ def test_shadow_draft_never_imports_drafter(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+        lambda value, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
     )
     monkeypatch.setitem(sys.modules, "dewie_brain.drafter", None)
 
@@ -88,7 +88,7 @@ def test_shadow_metrics_capture_policy_evidence_without_drafting(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(
+        lambda value, **_: DraftDecision(
             DecisionAction.DRAFT,
             "drafted",
             classification=classification,
@@ -121,7 +121,7 @@ def test_draft_request_includes_extracted_attachment_text(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda message: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+        lambda message, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
     )
     monkeypatch.setattr(main, "extract_attachment_text", lambda values, logger: "PDF text")
 
