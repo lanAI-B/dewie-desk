@@ -4,4 +4,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 requests>=2.31
+# Sent-folder continuity reads IMAP read-only; the legacy runner uses the same client.
+imap-tools>=1.5
 pypdf>=5,<7

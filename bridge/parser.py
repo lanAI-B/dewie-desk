@@ -32,6 +32,10 @@ class ParsedMessage:
     message_type: str = ""
     content_type: str = ""
     attachments: list[ParsedAttachment] = field(default_factory=list)
+    rfc822_message_id: str = ""
+    in_reply_to: str = ""
+    references: list[str] = field(default_factory=list)
+    to_emails: list[str] = field(default_factory=list)
     is_private: bool = False
     channel: str = ""
     should_process: bool = False
@@ -83,6 +87,91 @@ def _subject(payload: dict, conversation: dict) -> tuple[str, str]:
     return "", ""
 
 
+def normalize_message_id(value: Any) -> str:
+    """One canonical spelling for an RFC822 Message-ID.
+
+    Chatwoot, Outlook and IMAP all disagree about the angle brackets and the
+    surrounding whitespace, and a thread map keyed on the raw header would miss
+    the same message written two ways. Case is folded too: the standard calls
+    the local part case-sensitive, but no mail system in this pipeline varies
+    it, and folding costs less than a missed rethread.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.strip("<>").strip().lower()
+
+
+_REPLY_PREFIXES = ("re:", "re :", "fw:", "fwd:", "aw:", "antw:", "sv:", "vs:", "rv:")
+
+
+def normalize_subject(value: Any) -> str:
+    """Strip reply/forward prefixes so one thread has one subject key."""
+    text = " ".join(str(value or "").split()).lower()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _REPLY_PREFIXES:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                changed = True
+        if text.startswith("[") and "]" in text[:40]:
+            candidate = text[text.index("]") + 1:].strip()
+            if candidate:
+                text = candidate
+                changed = True
+    return text
+
+
+def message_id_list(value: Any) -> list[str]:
+    """Normalize a References/In-Reply-To header given as a list or a string."""
+    found: list[str] = []
+    values = value if isinstance(value, list) else str(value or "").split()
+    for item in values:
+        normalized = normalize_message_id(item)
+        if normalized and normalized not in found:
+            found.append(normalized)
+    return found
+
+
+def _email_addresses(value: Any) -> list[str]:
+    """Pull bare addresses out of a Chatwoot address list or header string."""
+    found: list[str] = []
+    values = value if isinstance(value, list) else str(value or "").split(",")
+    for item in values:
+        if isinstance(item, dict):
+            item = item.get("email") or item.get("address") or ""
+        text = str(item or "").strip()
+        if "<" in text and ">" in text:
+            text = text[text.rfind("<") + 1:text.rfind(">")]
+        text = text.strip().strip('"').lower()
+        if "@" in text and text not in found:
+            found.append(text)
+    return found
+
+
+def _thread_headers(payload: dict) -> tuple[str, str, list[str], list[str]]:
+    """Read the email threading headers Chatwoot keeps on the message."""
+    email = _dict(_dict(payload.get("content_attributes")).get("email"))
+    message_id = normalize_message_id(
+        email.get("message_id") or email.get("message-id")
+    )
+    in_reply_to = message_id_list(
+        email.get("in_reply_to") or email.get("in-reply-to")
+    )
+    references = message_id_list(email.get("references"))
+    recipients = _email_addresses(email.get("to"))
+    for address in _email_addresses(email.get("cc")):
+        if address not in recipients:
+            recipients.append(address)
+    return (
+        message_id,
+        in_reply_to[0] if in_reply_to else "",
+        references,
+        recipients,
+    )
+
+
 def _attachments(payload: dict) -> list[ParsedAttachment]:
     found = []
     raw_attachments = payload.get("attachments")
@@ -116,6 +205,7 @@ def parse_message_created(payload: dict) -> ParsedMessage:
     inbox = _dict(payload.get("inbox"))
     account = _dict(payload.get("account"))
     subject, subject_source = _subject(payload, conversation)
+    rfc822_message_id, in_reply_to, references, to_emails = _thread_headers(payload)
 
     parsed = ParsedMessage(
         event=str(payload.get("event") or "unknown"),
@@ -133,6 +223,10 @@ def parse_message_created(payload: dict) -> ParsedMessage:
         message_type=_message_type(payload.get("message_type")),
         content_type=str(payload.get("content_type") or "").strip().lower(),
         attachments=_attachments(payload),
+        rfc822_message_id=rfc822_message_id,
+        in_reply_to=in_reply_to,
+        references=references,
+        to_emails=to_emails,
         is_private=bool(payload.get("private")),
         channel=str(conversation.get("channel") or "").strip(),
         raw=payload,
@@ -199,6 +293,7 @@ def newest_customer_message(
         value,
         {"additional_attributes": conversation_attributes},
     )
+    rfc822_message_id, in_reply_to, references, to_emails = _thread_headers(value)
     parsed = ParsedMessage(
         event="message_created",
         account_id=int(value.get("account_id") or account_id or 0),
@@ -214,6 +309,10 @@ def newest_customer_message(
         message_type="incoming",
         content_type=str(value.get("content_type") or "").strip().lower(),
         attachments=_attachments(value),
+        rfc822_message_id=rfc822_message_id,
+        in_reply_to=in_reply_to,
+        references=references,
+        to_emails=to_emails,
         is_private=bool(value.get("private")),
         raw=value,
     )

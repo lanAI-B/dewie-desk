@@ -28,6 +28,7 @@ from parser import (
     parse_message_created,
 )
 from state import DedupStore
+from sent_sync import sent_sync_status
 import webhook_auth
 
 logging.basicConfig(level=logging.INFO)
@@ -322,6 +323,7 @@ def health() -> dict:
         "dry_run": dry_run(),
         "webhook_auth": "enforced" if webhook_auth.is_enforced() else "unenforced",
         "chatwoot_configured": bool(os.environ.get("CHATWOOT_API_TOKEN", "").strip()),
+        "sent_sync": sent_sync_status(),
         "counts": counts,
     }
 

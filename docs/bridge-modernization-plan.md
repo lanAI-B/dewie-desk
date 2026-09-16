@@ -35,7 +35,64 @@ built, QA has not been changed, and production remains unchanged.
   The command snapshots the newest already-recorded inbound ID before background
   work, so a later customer reply cannot ride an older label action.
   Live label-event and permission validation remains part of Slice 3.
+- Task #2705's Sent-folder continuity seam is implemented in source: every
+  inbound webhook now records the RFC822 threading headers it carries as a
+  local thread map, and a read-only Sent-folder pass resolves each externally
+  authored reply against that map and posts it as a private note, deduplicated
+  on the sent Message-ID. It is off by default, it is an attended command
+  rather than an HTTP route, and its live reliability is unproven - see
+  "Rethreading reliability" below.
 - Slice 5 has not started.
+
+## Rethreading reliability (task #2705, acceptance evidence)
+
+What the Sent-folder sync can and cannot promise, stated before anyone connects
+a mailbox to it.
+
+**Proven offline**, by `bridge/tests/test_sent_sync.py` and the state tests:
+
+- An inbound `message_created` webhook records `msgid:` keys for its own
+  Message-ID, its `In-Reply-To`, and every `References` entry, plus
+  `thread:<subject>|<participant>` keys for the sender and each recipient.
+- A sent reply resolves in that order: `In-Reply-To`, then `References`
+  newest-first, then subject-and-recipient. The method used is counted
+  separately, so a run that leaned on the guess is visible as a guess.
+- One sent Message-ID produces at most one private note, across process
+  restarts and across a re-parse of the same mail, because the claim is a row
+  in SQLite rather than a set in memory.
+- A reply that resolves to nothing is reported by subject and recipient and is
+  never attached to a conversation by proximity.
+- Only `post_private_note` is reachable from this path. The fake client in the
+  tests raises on any other attribute, so a public message - which Chatwoot
+  would actually *send* - fails the suite rather than the customer.
+
+**Not proven, and it needs a live mailbox to settle:**
+
+1. *Does Chatwoot populate `content_attributes.email.message_id`?* The whole
+   map depends on it. Every fixture here is synthetic, written to Chatwoot's
+   documented email shape. If the running version omits or renames that field,
+   `msgid:` keys are never written and every reply falls back to the subject
+   guess. **Check this first**: post one test mail, then read `thread_key` in
+   `data/bridge-state.sqlite3` and confirm a `msgid:` row exists.
+2. *Does Outlook set `In-Reply-To` on a reply?* Usually yes. A reply composed
+   as a new message to the same person will not have it, and will land on the
+   subject key or nowhere.
+3. *Backfill has no map.* The map is built from inbound webhooks going forward,
+   so Sent mail older than the bridge cannot resolve by Message-ID at all. The
+   backfill #2705 wanted is limited to what the subject-and-recipient key can
+   place, and that key is deliberately last.
+4. *Subject keys are lossy on purpose.* Reply and forward prefixes and a
+   leading `[tag]` are stripped so one thread has one key. Two genuinely
+   different threads with the same trimmed subject and the same participant
+   collapse into one key, and the newest conversation wins it.
+5. *Sent mail is not filtered by mailbox.* Anything in the configured folder is
+   a candidate, including mail a person sent about something else entirely.
+   Those land in `unresolved` rather than in a conversation, but the count will
+   not be zero and should not be read as a fault.
+
+Until 1 and 2 are observed against a real inbox, treat the drafter as still
+partially blind to what CS has already said. The gap is smaller and measured,
+not closed.
 
 ## Outcome
 

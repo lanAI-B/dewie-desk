@@ -74,6 +74,21 @@ until the board stays sane on its own.
    After a private draft note is posted, the bridge removes the label; a later
    customer reply requires a fresh label action. SEND stays a human click.
 
+5. **Sent-folder continuity** (optional, off by default). Chatwoot's email
+   channel reads INBOX only, so replies sent from Outlook are invisible to it
+   and a draft can contradict what CS already said. Set the `SENT_SYNC_*`
+   variables and run a pass by hand:
+   ```
+   cd bridge
+   python sent_sync.py          # dry run: resolve and count, post nothing
+   python sent_sync.py --post   # post the private notes
+   ```
+   The folder is opened read-only and fetched with `mark_seen=False`, each
+   reply is posted as a **private note** only, and one sent Message-ID can post
+   at most once. What it can and cannot place is written down under
+   "Rethreading reliability" in `docs/bridge-modernization-plan.md` — read that
+   before pointing it at a mailbox.
+
 ## Who unblocks what
 
 | Step | Owner |
