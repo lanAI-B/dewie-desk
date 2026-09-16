@@ -28,6 +28,21 @@ and email transport are Chatwoot's job; this repo owns only a thin layer on top:
 Both are the same principle: **reference, don't copy** — recreating either would put us
 back to owning the plumbing we chose to shed.
 
+## Safe demo check
+
+From the repository root, run one offline command before showing the policy:
+
+```
+py -3.14 bridge\shadow.py --demo
+```
+
+It replays 28 synthetic cases through the real transport gate, deduplication,
+and DewieOps decision policy, then prints a short readiness report. It makes no
+model call, reads no mailbox, calls no Chatwoot API, and cannot post a note or
+send customer mail. The command exits non-zero if any acceptance gate fails.
+Set `DEWIEOPS_PATH` only when the canonical DewieOps checkout is not the sibling
+`..\DewieOps` directory.
+
 ## Local pilot — order of operations
 
 Goal: prove the mail loop first — **inbound → ticket → reply back out** — on a

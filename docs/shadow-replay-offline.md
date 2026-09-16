@@ -119,7 +119,8 @@ Transport and decision
 
   By reason code
     drafted                            12
-    system_sender                      3
+    system_sender_localpart            2
+    system_sender_classified           1
     low_confidence                     2
     not_incoming                       2
     classifier_failed                  1

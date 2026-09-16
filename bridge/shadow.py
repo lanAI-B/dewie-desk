@@ -27,12 +27,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _configure_dewieops_path() -> None:
+    """Prefer the canonical sibling DewieOps checkout for the policy import."""
+    configured = (os.environ.get("DEWIEOPS_PATH") or "").strip()
+    root = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path(__file__).resolve().parents[2] / "DewieOps"
+    )
+    if root.is_dir() and str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+
+_configure_dewieops_path()
 
 import main
 from state import DedupStore
@@ -468,18 +484,72 @@ def gates_pass(summary: dict) -> bool:
     return all(summary["acceptance_gates"].values())
 
 
+def demo_ready(summary: dict) -> bool:
+    """Require both policy gates and a one-way-safe legacy comparison."""
+    return (
+        gates_pass(summary)
+        and not summary["findings"]["false_draft"]
+        and not summary["comparison_with_production_bridge"]["new_drafts_legacy_does_not"]
+    )
+
+
+def render_demo(summary: dict) -> str:
+    """Render the small, candid report used for a live desk walkthrough."""
+    gates = summary["acceptance_gates"]
+    findings = summary["findings"]
+    comparison = summary["comparison_with_production_bridge"]
+    false_drafts = len(findings["false_draft"])
+    legacy_refused = len(comparison["legacy_drafts_new_does_not"])
+    reverse_regressions = len(comparison["new_drafts_legacy_does_not"])
+    passed = sum(gates.values())
+    ready = demo_ready(summary)
+
+    return "\n".join(
+        [
+            "Desk demo readiness - offline policy replay",
+            f"corpus: {summary['corpus']} ({summary['totals']['cases']} synthetic cases)",
+            "safety: no model, mailbox, Chatwoot API, private note, or customer send",
+            "",
+            f"{'PASS' if passed == len(gates) else 'FAIL'}  policy gates: {passed}/{len(gates)}",
+            f"{'PASS' if false_drafts == 0 else 'FAIL'}  false drafts: {false_drafts}",
+            f"{'PASS' if reverse_regressions == 0 else 'FAIL'}  newly-authorized drafts vs current bridge: {reverse_regressions}",
+            f"INFO  current-bridge drafts refused by replacement: {legacy_refused}",
+            f"INFO  offline drafter calls made: {summary['model']['drafter_calls']}",
+            "",
+            f"{'READY' if ready else 'NOT READY'}: safe to show the deterministic policy replay",
+            "Limit: classifier labels are recorded; live classifier and transport need attended QA.",
+        ]
+    )
+
+
 def main_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--json", action="store_true", help="emit the report as JSON")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit the report as JSON")
+    output.add_argument(
+        "--demo",
+        action="store_true",
+        help="emit a concise, presentation-ready readiness report",
+    )
     parser.add_argument("--out", help="also write the report to this path")
     args = parser.parse_args(argv)
 
+    if args.demo:
+        # The corpus deliberately includes a classifier failure. Its warning is
+        # useful in service logs but is expected noise in this offline report.
+        logging.getLogger("dewie-desk-bridge").setLevel(logging.CRITICAL)
     summary = summarize(replay())
-    text = json.dumps(summary, indent=2) if args.json else render(summary)
+    if args.json:
+        text = json.dumps(summary, indent=2)
+    elif args.demo:
+        text = render_demo(summary)
+    else:
+        text = render(summary)
     print(text)
     if args.out:
         Path(args.out).write_text(text + "\n", encoding="utf-8")
-    return 0 if gates_pass(summary) else 1
+    ready = demo_ready(summary) if args.demo else gates_pass(summary)
+    return 0 if ready else 1
 
 
 if __name__ == "__main__":

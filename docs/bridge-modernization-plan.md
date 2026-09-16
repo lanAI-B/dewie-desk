@@ -16,7 +16,8 @@ built, QA has not been changed, and production remains unchanged.
   Command Center already owns 3000. A Chatwoot release tag is mandatory rather
   than silently falling back to `latest`.
 - Slice 2's policy contract is implemented and integrated in source.
-- Slice 3's OFFLINE half is done; its QA half has not started. A sanitized
+- Slice 3's OFFLINE half is done; a narrow attended local validation has also
+  passed, but no QA deployment has started. A sanitized
   28-case corpus replays through the real transport gate, the real durable dedup
   store and the real DewieOps policy with no model call, and produces the
   aggregate the review report requires. Result and limits are in
@@ -49,8 +50,8 @@ built, QA has not been changed, and production remains unchanged.
   local thread map, and a read-only Sent-folder pass resolves each externally
   authored reply against that map and posts it as a private note, deduplicated
   on the sent Message-ID. It is off by default, it is an attended command
-  rather than an HTTP route, and its live reliability is unproven - see
-  "Rethreading reliability" below.
+  rather than an HTTP route. Its Message-ID path and deduplication passed one
+  attended local disposable-Gmail run; see "Rethreading reliability" below.
 - Slice 5 has not started.
 
 ## Rethreading reliability (task #2705, acceptance evidence)
@@ -75,33 +76,53 @@ a mailbox to it.
   tests raises on any other attribute, so a public message - which Chatwoot
   would actually *send* - fails the suite rather than the customer.
 
-**Not proven, and it needs a live mailbox to settle:**
+**Observed attended locally on 2026-09-16, using a disposable Gmail mailbox:**
 
-1. *Does Chatwoot populate `content_attributes.email.message_id`?* The whole
-   map depends on it. Every fixture here is synthetic, written to Chatwoot's
-   documented email shape. If the running version omits or renames that field,
-   `msgid:` keys are never written and every reply falls back to the subject
-   guess. **Check this first**: post one test mail, then read `thread_key` in
-   `data/bridge-state.sqlite3` and confirm a `msgid:` row exists.
-2. *Does Outlook set `In-Reply-To` on a reply?* Usually yes. A reply composed
-   as a new message to the same person will not have it, and will land on the
-   subject key or nowhere.
-3. *Backfill has no map.* The map is built from inbound webhooks going forward,
+- Chatwoot message `30` contained `content_attributes.email.message_id`.
+- The signed inbound webhook recorded that Message-ID and resolved it to
+  conversation `9`.
+- A self-addressed test reply carried `In-Reply-To` for that inbound Message-ID.
+- The first read-only Sent pass resolved the reply and posted exactly one
+  private note. The second pass reported `duplicate_sent`, proving the sent
+  Message-ID claim prevented a second note.
+- Public outgoing messages remained at `0` throughout the run.
+
+This settles the Message-ID path for that local disposable-Gmail flow. It did
+not use customer mail, build an image, deploy QA, or authorize a cutover.
+
+**Limits that remain:**
+
+1. *Backfill has no map.* The map is built from inbound webhooks going forward,
    so Sent mail older than the bridge cannot resolve by Message-ID at all. The
    backfill #2705 wanted is limited to what the subject-and-recipient key can
    place, and that key is deliberately last.
-4. *Subject keys are lossy on purpose.* Reply and forward prefixes and a
+2. *Subject keys are lossy on purpose.* Reply and forward prefixes and a
    leading `[tag]` are stripped so one thread has one key. Two genuinely
    different threads with the same trimmed subject and the same participant
    collapse into one key, and the newest conversation wins it.
-5. *Sent mail is not filtered by mailbox.* Anything in the configured folder is
+3. *Sent mail is not filtered by mailbox.* Anything in the configured folder is
    a candidate, including mail a person sent about something else entirely.
    Those land in `unresolved` rather than in a conversation, but the count will
    not be zero and should not be read as a fault.
+4. *Provider behavior still varies.* The attended run proved Gmail supplied
+   `In-Reply-To`; Outlook and other configured mailboxes still need their own
+   controlled check.
 
-Until 1 and 2 are observed against a real inbox, treat the drafter as still
-partially blind to what CS has already said. The gap is smaller and measured,
-not closed.
+The drafter is no longer blind in the one tested local flow. Treat that as
+narrow acceptance evidence, not as deployment evidence or a guarantee for all
+mail providers and historical threads.
+
+## 11 AM demo sequence
+
+1. From the dewie-desk repository root, run
+   `py -3.14 bridge\shadow.py --demo`.
+2. Show the four passing policy gates, zero false or newly authorized drafts,
+   and the seven drafts the replacement refuses that the current bridge allows.
+3. Explain the attended continuity result as a short chain: signed inbound
+   Message-ID -> conversation `9` -> one private Sent note -> `duplicate_sent`
+   on replay -> zero public outgoing.
+4. Close on scope: the demo is offline and synthetic; the continuity evidence
+   is local disposable Gmail; no image, QA deployment, or cutover exists yet.
 
 ## Outcome
 
@@ -226,7 +247,8 @@ Initial policy:
 not quietly fall back to the broadest, most expensive drafting path.
 
 Required reason codes include `transport_filtered`, `duplicate_message`,
-`system_sender`, `notification_only`, `classifier_failed`, `unknown_actor`,
+`system_sender_localpart`, `system_sender_classified`, `notification_only`,
+`classifier_failed`, `unknown_actor`,
 `unknown_intent`, `low_confidence`, `not_actionable`, `drafted`,
 `draft_failed`, and `note_post_failed`.
 

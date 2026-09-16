@@ -154,3 +154,33 @@ def test_report_renders_without_raising(summary):
     text = shadow.render(summary)
     assert "Acceptance gates" in text
     assert "no model call" in text
+
+
+def test_demo_report_is_concise_and_states_its_safety_boundary(summary):
+    text = shadow.render_demo(summary)
+
+    assert len(text.splitlines()) <= 15
+    assert "READY: safe to show" in text
+    assert "no model, mailbox, Chatwoot API, private note, or customer send" in text
+    assert "current-bridge drafts refused by replacement: 7" in text
+    assert "classifier labels are recorded" in text
+
+
+def test_demo_report_fails_closed_when_a_gate_fails(summary):
+    changed = copy.deepcopy(summary)
+    changed["acceptance_gates"]["no_corpus_defects"] = False
+
+    text = shadow.render_demo(changed)
+
+    assert "FAIL  policy gates: 3/4" in text
+    assert "NOT READY: safe to show" in text
+
+
+def test_demo_readiness_rejects_a_newly_authorized_draft(summary):
+    changed = copy.deepcopy(summary)
+    changed["comparison_with_production_bridge"]["new_drafts_legacy_does_not"] = [
+        {"case": "regression", "reason": "drafted"}
+    ]
+
+    assert not shadow.demo_ready(changed)
+    assert "NOT READY: safe to show" in shadow.render_demo(changed)

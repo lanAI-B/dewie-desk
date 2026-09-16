@@ -32,7 +32,7 @@ def test_system_sender_skips_before_classifier_runtime_is_built(monkeypatch):
     decision = main._decision(message("no-reply@example.com"))
 
     assert decision.action is DecisionAction.SKIP
-    assert decision.reason_code == "system_sender"
+    assert decision.reason_code == "system_sender_localpart"
 
 
 def test_classifier_failure_triages_instead_of_drafting(monkeypatch):
