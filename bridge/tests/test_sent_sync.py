@@ -271,12 +271,19 @@ def test_enabled_without_credentials_reports_instead_of_crashing(monkeypatch, st
 def test_fetch_is_read_only_and_bounded(monkeypatch):
     captured = {}
 
+    class FakeFolderManager:
+        def set(self, folder, readonly=False):
+            captured.update(folder=folder, readonly=readonly)
+
     class FakeMailbox:
         def __init__(self, host):
             captured["host"] = host
+            self.folder = FakeFolderManager()
 
-        def login(self, username, password, folder):
-            captured.update(username=username, password=password, folder=folder)
+        def login(self, username, password, initial_folder="INBOX"):
+            captured.update(
+                username=username, password=password, initial_folder=initial_folder
+            )
             return self
 
         def __enter__(self):
@@ -302,6 +309,31 @@ def test_fetch_is_read_only_and_bounded(monkeypatch):
         lookback_days=14,
     )
 
+    assert captured["initial_folder"] is None
     assert captured["folder"] == "Sent"
+    assert captured["readonly"] is True
     assert captured["fetch_kwargs"]["mark_seen"] is False
     assert captured["fetch_kwargs"]["limit"] == 200
+
+
+def test_a_message_without_raw_source_still_normalizes(store):
+    """imap_tools exposes .obj, but a message that lacks it must not crash a pass."""
+
+    class HeaderOnly:
+        uid = "77"
+        subject = "Re: Access question"
+        from_ = "Paula Reyes <paula@actexlearning.com>"
+        to = ("person@example.com",)
+        date = None
+        text = "Handled by phone."
+        headers = {
+            "message-id": ("<header-only@outlook.example>",),
+            "in-reply-to": ("<inbound-1@mail.example>",),
+        }
+
+    reply = sent_sync.from_mail_message(HeaderOnly())
+
+    assert reply.message_id == "header-only@outlook.example"
+    assert reply.in_reply_to == "inbound-1@mail.example"
+    assert reply.to_emails == ("person@example.com",)
+    assert sent_sync.note_claim_key(reply) == "sent-note:msgid:header-only@outlook.example"

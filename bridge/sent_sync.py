@@ -312,7 +312,11 @@ def fetch_sent_replies(
 
     since = date.today() - timedelta(days=max(lookback_days, 0))
     replies = []
-    with MailBox(host).login(username, password, folder) as mailbox:
+    # login(initial_folder=...) selects the folder read-WRITE. This mailbox is
+    # one people are working in, so select it read-only ourselves and let
+    # mark_seen=False keep the unread flags as the human left them.
+    with MailBox(host).login(username, password, initial_folder=None) as mailbox:
+        mailbox.folder.set(folder, readonly=True)
         for message in mailbox.fetch(AND(date_gte=since), mark_seen=False, limit=limit):
             replies.append(from_mail_message(message))
     return replies
