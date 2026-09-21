@@ -94,11 +94,21 @@ State lives in the bridge SQLite database (`BRIDGE_STATE_DB`):
 - `outbound_attempt` — append-only history per attempt with its actor, source,
   outcome, and start/finish times.
 
-Message content is stored only as its hash. `detail` is a short machine code,
-never Chatwoot response text or an exception message, because either can echo
-the message: `created`, `http_<status>`, `request_error:<ErrorClass>`,
-`transport_error:<ErrorClass>`, `accepted_without_message_id`, or
-`detail_withheld` when a client detail is not a plain code.
+Message content is stored only as its hash. `detail` is never Chatwoot response
+text or an exception message, because either can echo the message. Client
+details pass through an explicit allowlist; everything else, including
+code-shaped strings such as a reference or card number, is stored and returned
+as `detail_withheld`. The allowlist is:
+
+- exactly `created`, `accepted_without_message_id`, `invalid_conversation_id`,
+  or `empty_content`;
+- `http_<status>` with a three-digit status from 100–599;
+- `request_error:<ErrorClass>` where `<ErrorClass>` is a class defined in
+  `requests.exceptions`, or `ConnectionRefused`.
+
+The bridge itself adds `transport_error:<ErrorClass>` (the Python class name of
+an unexpected client failure), `outcome_not_recorded`, and
+`claim_pending_outcome_unknown`; these never carry caller or Chatwoot text.
 
 The claim uses a SQLite `BEGIN IMMEDIATE` transaction, so concurrent duplicate
 requests (threads or processes sharing the file) produce one attempt. A failure

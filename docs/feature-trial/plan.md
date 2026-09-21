@@ -1,6 +1,6 @@
 # Feature: safe Chatwoot outbound system-email transport
 
-Status: PM changes requested after re-review (local only; not deployed)
+Status: ready for PM re-review after privacy correction (local only; not deployed)
 Tracking: this plan only; source queue task #6176 was closed as transferred after
 initial plan commit `48ccbe4`
 
@@ -108,8 +108,34 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
 
 ## Current checkpoint (coder maintains)
 
-- Active run: none — manual Claude coder correction run of 2026-09-21 ended
-  **ready for PM re-review**
+- Active run: none — manual Claude coder privacy-correction run of 2026-09-21
+  ended **ready for PM re-review**
+- Privacy-correction run (2026-09-21), started clean at `9c26226` with no active
+  marker; one local commit on top (SHA reported in the handoff). Not pushed.
+  - `bridge/outbound.py`: `_safe_detail` no longer accepts any short
+    code-shaped string. It passes only an allowlist: exactly `created`,
+    `accepted_without_message_id`, `invalid_conversation_id`, `empty_content`;
+    `http_[1-5][0-9][0-9]`; and `request_error:<name>` where `<name>` is a class
+    in `requests.exceptions` or `ConnectionRefused`. Everything else, including
+    empty strings, becomes `detail_withheld`.
+  - New tests (`bridge/tests/test_outbound_endpoint.py`):
+    `test_code_shaped_client_detail_is_withheld_everywhere` (10 cases including
+    `REFSECRET8841`, `4111111111111111`, `http_4111111111111111`,
+    `request_error:REFSECRET8841`, a spoofed `transport_error:...`; each checks
+    the response, `outbound_message`, and `outbound_attempt`) and
+    `test_every_detail_the_real_client_emits_is_allowlisted` (drives the real
+    client through its success, HTTP, and exception branches and proves no
+    genuine code is withheld).
+  - Red check: with `6b87a5f`'s `outbound.py` temporarily restored, all 10
+    withheld cases failed; with the allowlist, all pass.
+  - Docs: `docs/chatwoot-outbound-transport.md` now describes the allowlist
+    instead of "plain code" wording.
+  - Checks (from `bridge`, DewieOps sibling at `11d4fd5`):
+    `tests/test_chatwoot.py tests/test_state.py`: 23 passed;
+    plus `tests/test_outbound_endpoint.py`: 72 passed;
+    `tests -q`: 107 passed, 1 failed (same unrelated
+    `test_main.py::test_system_sender_skips_before_classifier_runtime_is_built`
+    DewieOps baseline failure, untouched); `git diff --check`: clean.
 - Correction run (2026-09-21), started clean at `6477bdc` with no active marker;
   one local commit on top (SHA reported in the handoff). Not pushed.
   - Correction 1 (`bridge/outbound.py`): once Chatwoot has been called, a

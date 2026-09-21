@@ -469,3 +469,85 @@ def test_free_text_client_detail_is_withheld_before_storage(wired):
     assert rejected.json()["detail"] == "detail_withheld"
     assert unknown.json()["detail"] == "transport_error:RuntimeError"
     assert "REF-SECRET-8841" not in _stored_text(store.path)[1]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "REFSECRET8841",
+        "4111111111111111",
+        "http_4111111111111111",
+        "http_4111",
+        "request_error:REFSECRET8841",
+        "request_error:4111111111111111",
+        "transport_error:RuntimeError",
+        "created:4111111111111111",
+        "CREATED",
+        "",
+    ],
+)
+def test_code_shaped_client_detail_is_withheld_everywhere(wired, detail):
+    store, install = wired
+    install(OutboundResult("rejected", 400, None, detail))
+
+    response = TestClient(main.app).post(ROUTE, json=body(), headers=auth())
+
+    assert response.json()["status"] == "rejected"
+    assert response.json()["detail"] == "detail_withheld"
+    rows, stored = _stored_text(store.path)
+    assert len(rows) == 2
+    assert "REFSECRET8841" not in response.text + stored
+    assert "4111111111111111" not in response.text + stored
+    assert "transport_error:RuntimeError" not in stored
+
+
+def test_every_detail_the_real_client_emits_is_allowlisted(monkeypatch):
+    import chatwoot
+    import outbound
+    import requests
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
+
+    class Reply:
+        text = "ignored"
+
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    outcomes = [
+        Reply(200, {"id": 501}),
+        Reply(201, {}),
+        *(Reply(status, {}) for status in (400, 404, 408, 422, 429, 500, 503)),
+        requests.ConnectTimeout("x"),
+        requests.ReadTimeout("x"),
+        requests.ConnectionError("x"),
+        requests.ConnectionError(MaxRetryError(None, "/", NewConnectionError(None, "x"))),
+        requests.exceptions.InvalidURL("x"),
+        requests.exceptions.MissingSchema("x"),
+        requests.exceptions.InvalidSchema("x"),
+        requests.exceptions.InvalidHeader("x"),
+        requests.exceptions.ChunkedEncodingError("x"),
+        requests.exceptions.SSLError("x"),
+        requests.exceptions.TooManyRedirects("x"),
+    ]
+    client = chatwoot.ChatwootClient("http://desk", "1", "token")
+    emitted = [
+        client.post_public_outgoing(0, "Hi").detail,
+        client.post_public_outgoing(45, " ").detail,
+    ]
+    for outcome in outcomes:
+        def post(*args, _outcome=outcome, **kwargs):
+            if isinstance(_outcome, Exception):
+                raise _outcome
+            return _outcome
+
+        monkeypatch.setattr("chatwoot.requests.post", post)
+        emitted.append(client.post_public_outgoing(45, "Hi").detail)
+
+    assert "detail_withheld" not in emitted
+    assert [outbound._safe_detail(value) for value in emitted] == emitted
+    assert {"created", "accepted_without_message_id", "http_422", "http_503",
+            "request_error:ReadTimeout", "request_error:ConnectionRefused"} <= set(emitted)

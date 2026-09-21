@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Annotated, Mapping
 
+import requests
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from state import DedupStore, OutboundRecord
@@ -28,7 +29,24 @@ MIN_TOKEN_LENGTH = 32
 # Secrets with another purpose must never double as the outbound credential.
 _OTHER_SECRETS = ("CHATWOOT_WEBHOOK_SECRET", "CHATWOOT_API_TOKEN")
 _BEARER = re.compile(r"Bearer ([^\s]+)")
-_SAFE_DETAIL = re.compile(r"[A-Za-z0-9_:.\-]{0,80}")
+
+# The only client details that may be stored or returned. Anything else, even a
+# short code-shaped string, could be a reference or card number and is withheld.
+_KNOWN_DETAILS = frozenset({
+    "created",
+    "accepted_without_message_id",
+    "invalid_conversation_id",
+    "empty_content",
+})
+_HTTP_DETAIL = re.compile(r"http_[1-5][0-9]{2}")
+_REQUEST_ERRORS = frozenset(
+    {
+        name
+        for name, value in vars(requests.exceptions).items()
+        if isinstance(value, type) and issubclass(value, BaseException)
+    }
+    | {"ConnectionRefused"}
+)
 
 log = logging.getLogger("dewie-desk-bridge.outbound")
 
@@ -106,9 +124,15 @@ def content_digest(content: str) -> str:
 
 
 def _safe_detail(detail: object) -> str:
-    """Keep only short machine codes; anything else could carry message content."""
-    value = detail if isinstance(detail, str) else ""
-    return value if _SAFE_DETAIL.fullmatch(value) else "detail_withheld"
+    """Pass through only allowlisted transport codes; withhold everything else."""
+    if not isinstance(detail, str):
+        return "detail_withheld"
+    if detail in _KNOWN_DETAILS or _HTTP_DETAIL.fullmatch(detail):
+        return detail
+    prefix, _, name = detail.partition(":")
+    if prefix == "request_error" and name in _REQUEST_ERRORS:
+        return detail
+    return "detail_withheld"
 
 
 def _response(
