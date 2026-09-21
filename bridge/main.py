@@ -11,6 +11,8 @@ from collections import Counter
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 try:
     from dotenv import load_dotenv
@@ -28,6 +30,7 @@ from parser import (
     parse_message_created,
 )
 from state import DedupStore
+import outbound
 import webhook_auth
 
 logging.basicConfig(level=logging.INFO)
@@ -321,9 +324,54 @@ def health() -> dict:
         "shadow_mode": shadow_mode(),
         "dry_run": dry_run(),
         "webhook_auth": "enforced" if webhook_auth.is_enforced() else "unenforced",
+        "outbound_auth": outbound.configuration_problem() or "configured",
         "chatwoot_configured": bool(os.environ.get("CHATWOOT_API_TOKEN", "").strip()),
         "counts": counts,
     }
+
+
+@app.post("/internal/chatwoot/outbound-message")
+async def chatwoot_outbound_message(request: Request) -> JSONResponse:
+    """Send one customer-visible reply on an existing conversation, at most once."""
+    verdict = outbound.authorize(request.headers)
+    if not verdict.ok:
+        _increment("outbound_auth_rejected")
+        raise HTTPException(status_code=verdict.status_code, detail=verdict.reason)
+
+    try:
+        payload = json.loads(await request.body())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _increment("outbound_invalid_json")
+        raise HTTPException(status_code=400, detail="invalid_json")
+    try:
+        parsed = outbound.parse_request(payload)
+    except ValueError as exc:
+        _increment("outbound_invalid_request")
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    try:
+        status_code, result = await run_in_threadpool(
+            outbound.deliver, dedup_store(), chatwoot_client(), parsed
+        )
+    except outbound.IdempotencyConflict as exc:
+        _increment("outbound_idempotency_conflict")
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    _increment(f"outbound_{'replayed' if result['replayed'] else 'attempted'}_{result['status']}")
+    log.info(
+        "outbound key=%s conversation=%s status=%s replayed=%s attempts=%s message=%s "
+        "http=%s actor=%s source=%s",
+        parsed.idempotency_key,
+        parsed.conversation_id,
+        result["status"],
+        result["replayed"],
+        result["attempts"],
+        result["chatwoot_message_id"],
+        result["http_status"],
+        parsed.actor,
+        parsed.source,
+    )
+    return JSONResponse(status_code=status_code, content=result)
 
 
 @app.post("/chatwoot/webhook")

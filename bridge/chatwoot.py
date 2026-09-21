@@ -1,10 +1,51 @@
-"""Minimal Chatwoot API client with no customer-facing send operation."""
+"""Minimal Chatwoot API client.
+
+Message visibility is fixed per method: ``post_private_note`` is always internal
+and ``post_public_outgoing`` is always customer-visible. Neither accepts a flag.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import requests
+from urllib3.exceptions import NewConnectionError
+
+Outcome = Literal["accepted", "rejected", "unknown"]
+
+# Statuses that prove Chatwoot refused the request without creating a message.
+# 408 and every 5xx stay ambiguous: the server may have committed before failing.
+_DEFINITIVE_REJECTIONS = frozenset({400, 401, 403, 404, 405, 409, 413, 415, 422, 429})
+
+# Request errors raised before any bytes of the request can have reached Chatwoot.
+_PRE_DISPATCH_ERRORS = (
+    requests.ConnectTimeout,
+    requests.exceptions.InvalidURL,
+    requests.exceptions.MissingSchema,
+    requests.exceptions.InvalidSchema,
+    requests.exceptions.InvalidHeader,
+)
+
+
+@dataclass(frozen=True)
+class OutboundResult:
+    """Outcome of one customer-visible message attempt.
+
+    ``accepted`` means Chatwoot returned a created message ID. ``rejected`` means
+    no message can exist. ``unknown`` means a message may exist and the attempt
+    must be reconciled, never blindly resent.
+    """
+
+    outcome: Outcome
+    status_code: int | None = None
+    message_id: int | None = None
+    detail: str = ""
+
+
+def _connection_refused(exc: requests.RequestException) -> bool:
+    reason = getattr(exc.args[0], "reason", None) if exc.args else None
+    return isinstance(reason, NewConnectionError)
 
 
 @dataclass(frozen=True)
@@ -69,6 +110,43 @@ class ChatwootClient:
         except (ValueError, AttributeError):
             message_id = None
         return PostResult(True, response.status_code, message_id, "posted")
+
+    def post_public_outgoing(self, conversation_id: int, content: str) -> OutboundResult:
+        """Post a customer-visible reply; ``private`` is deliberately not configurable."""
+        if (
+            isinstance(conversation_id, bool)
+            or not isinstance(conversation_id, int)
+            or conversation_id <= 0
+        ):
+            return OutboundResult("rejected", detail="invalid_conversation_id")
+        if not isinstance(content, str) or not content.strip():
+            return OutboundResult("rejected", detail="empty_content")
+        try:
+            response = requests.post(
+                self._url(f"/conversations/{conversation_id}/messages"),
+                json={"content": content, "message_type": "outgoing", "private": False},
+                headers=self._headers,
+                timeout=self.timeout,
+            )
+        except _PRE_DISPATCH_ERRORS as exc:
+            return OutboundResult("rejected", detail=f"{type(exc).__name__}: {exc}")
+        except requests.ConnectionError as exc:
+            outcome: Outcome = "rejected" if _connection_refused(exc) else "unknown"
+            return OutboundResult(outcome, detail=f"{type(exc).__name__}: {exc}")
+        except requests.RequestException as exc:
+            return OutboundResult("unknown", detail=f"{type(exc).__name__}: {exc}")
+
+        status = response.status_code
+        if status // 100 != 2:
+            outcome = "rejected" if status in _DEFINITIVE_REJECTIONS else "unknown"
+            return OutboundResult(outcome, status, detail=f"HTTP {status}: {response.text[:300]}")
+        try:
+            message_id = response.json().get("id")
+        except (ValueError, AttributeError):
+            message_id = None
+        if isinstance(message_id, bool) or not isinstance(message_id, int):
+            return OutboundResult("unknown", status, detail="accepted_without_message_id")
+        return OutboundResult("accepted", status, message_id, "created")
 
     def get_conversation(self, conversation_id: int) -> ConversationResult:
         """Fetch the current message page and metadata for one conversation."""

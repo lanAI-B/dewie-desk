@@ -1,0 +1,342 @@
+import hashlib
+import sqlite3
+
+import pytest
+from fastapi.testclient import TestClient
+
+import main
+from chatwoot import OutboundResult
+from state import DedupStore
+
+ROUTE = "/internal/chatwoot/outbound-message"
+TOKEN = "t" * 40
+
+
+def body(**updates):
+    value = {
+        "conversation_id": 45,
+        "content": "Your refund of $12.00 was issued.",
+        "idempotency_key": "refund:123",
+        "actor": "lana",
+        "source": "dewieops-refund-test",
+    }
+    value.update(updates)
+    return value
+
+
+def auth(token=TOKEN):
+    return {"Authorization": f"Bearer {token}"}
+
+
+class FakeChatwoot:
+    """Records public-outgoing calls; any private-note call fails the test."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.calls = []
+
+    def post_public_outgoing(self, conversation_id, content):
+        self.calls.append((conversation_id, content))
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def post_private_note(self, *args, **kwargs):
+        raise AssertionError("outbound transport must never post a private note")
+
+
+class ForbiddenStore:
+    def __getattr__(self, name):
+        raise AssertionError(f"store.{name} must not be reached")
+
+
+@pytest.fixture
+def wired(monkeypatch, tmp_path):
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", TOKEN)
+    store = DedupStore(tmp_path / "bridge.sqlite3")
+    monkeypatch.setattr(main, "dedup_store", lambda: store)
+
+    def install(*results, cls=FakeChatwoot):
+        fake = cls(*results)
+        monkeypatch.setattr(main, "chatwoot_client", lambda: fake)
+        return fake
+
+    return store, install
+
+
+def accepted(message_id=501):
+    return OutboundResult("accepted", 200, message_id, "created")
+
+
+def test_missing_invalid_and_unconfigured_auth_fail_before_claim(monkeypatch):
+    fake = FakeChatwoot()
+    monkeypatch.setattr(main, "dedup_store", lambda: ForbiddenStore())
+    monkeypatch.setattr(main, "chatwoot_client", lambda: fake)
+    client = TestClient(main.app)
+
+    monkeypatch.delenv("BRIDGE_OUTBOUND_TOKEN", raising=False)
+    assert client.post(ROUTE, json=body(), headers=auth()).status_code == 503
+
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", "short")
+    response = client.post(ROUTE, json=body(), headers=auth("short"))
+    assert response.status_code == 503
+    assert response.json()["detail"] == "outbound_token_too_short"
+
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", TOKEN)
+    for headers in (
+        {},
+        {"Authorization": TOKEN},
+        {"Authorization": f"Basic {TOKEN}"},
+        auth("x" * 40),
+        auth(TOKEN + "x"),
+    ):
+        response = client.post(ROUTE, json=body(), headers=headers)
+        assert response.status_code == 401, headers
+
+    assert fake.calls == []
+
+
+def test_outbound_token_must_not_reuse_other_bridge_secrets(monkeypatch):
+    fake = FakeChatwoot()
+    monkeypatch.setattr(main, "dedup_store", lambda: ForbiddenStore())
+    monkeypatch.setattr(main, "chatwoot_client", lambda: fake)
+    client = TestClient(main.app)
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", TOKEN)
+
+    for name in ("CHATWOOT_WEBHOOK_SECRET", "CHATWOOT_API_TOKEN"):
+        monkeypatch.setenv(name, TOKEN)
+        response = client.post(ROUTE, json=body(), headers=auth())
+        assert response.status_code == 503
+        assert response.json()["detail"] == "outbound_token_reuses_other_secret"
+        monkeypatch.delenv(name)
+
+    assert fake.calls == []
+
+
+def test_webhook_signature_does_not_authorize_outbound(monkeypatch):
+    import webhook_auth
+
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "secret")
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", TOKEN)
+    monkeypatch.setattr(main, "dedup_store", lambda: ForbiddenStore())
+    raw = b'{"conversation_id":45}'
+
+    response = TestClient(main.app).post(
+        ROUTE, content=raw, headers=webhook_auth.sign_headers(raw, "secret")
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        body(conversation_id=None),
+        body(conversation_id=0),
+        body(conversation_id=-4),
+        body(conversation_id="45"),
+        body(conversation_id=True),
+        body(conversation_id=4.5),
+        body(content=""),
+        body(content="   \n"),
+        body(idempotency_key=""),
+        body(idempotency_key="has space"),
+        body(idempotency_key="k" * 201),
+        body(actor=""),
+        body(source="  "),
+        body(private=True),
+        body(message_type="outgoing"),
+        body(email="someone@example.com"),
+        {key: value for key, value in body().items() if key != "actor"},
+        {key: value for key, value in body().items() if key != "source"},
+        {key: value for key, value in body().items() if key != "idempotency_key"},
+        ["not", "an", "object"],
+    ],
+)
+def test_invalid_request_is_rejected_before_claim(monkeypatch, value):
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", TOKEN)
+    monkeypatch.setattr(main, "dedup_store", lambda: ForbiddenStore())
+    fake = FakeChatwoot()
+    monkeypatch.setattr(main, "chatwoot_client", lambda: fake)
+
+    response = TestClient(main.app).post(ROUTE, json=value, headers=auth())
+
+    assert response.status_code == 422
+    assert fake.calls == []
+
+
+def test_malformed_json_is_rejected_before_claim(monkeypatch):
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", TOKEN)
+    monkeypatch.setattr(main, "dedup_store", lambda: ForbiddenStore())
+
+    response = TestClient(main.app).post(ROUTE, content=b"{nope", headers=auth())
+
+    assert response.status_code == 400
+
+
+def test_accepted_send_records_audit_and_duplicate_does_not_call_again(wired):
+    store, install = wired
+    fake = install(accepted())
+    client = TestClient(main.app)
+
+    first = client.post(ROUTE, json=body(), headers=auth())
+    second = client.post(ROUTE, json=body(actor="someone-else"), headers=auth())
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "status": "accepted",
+        "idempotency_key": "refund:123",
+        "conversation_id": 45,
+        "chatwoot_message_id": 501,
+        "http_status": 200,
+        "detail": "created",
+        "attempts": 1,
+        "replayed": False,
+        "retry_safe": False,
+    }
+    assert second.status_code == 200
+    assert second.json() == {**first.json(), "replayed": True}
+    assert fake.calls == [(45, "Your refund of $12.00 was issued.")]
+
+    record = store.get_outbound("refund:123")
+    assert record.actor == "lana"
+    assert record.source == "dewieops-refund-test"
+    assert record.content_sha256 == hashlib.sha256(
+        "Your refund of $12.00 was issued.".encode("utf-8")
+    ).hexdigest()
+
+
+def test_claim_is_durable_before_chatwoot_is_called(wired):
+    store, install = wired
+    seen = []
+
+    class Inspecting(FakeChatwoot):
+        def post_public_outgoing(self, conversation_id, content):
+            with sqlite3.connect(store.path) as connection:
+                seen.append(connection.execute(
+                    "SELECT status FROM outbound_message WHERE idempotency_key = ?",
+                    ("refund:123",),
+                ).fetchone())
+            return super().post_public_outgoing(conversation_id, content)
+
+    install(accepted(), cls=Inspecting)
+
+    response = TestClient(main.app).post(ROUTE, json=body(), headers=auth())
+
+    assert response.json()["status"] == "accepted"
+    assert seen == [("pending",)]
+
+
+def test_timeout_after_dispatch_is_durable_unknown_and_not_resent(wired):
+    store, install = wired
+    fake = install(OutboundResult("unknown", None, None, "ReadTimeout: read timed out"))
+    client = TestClient(main.app)
+
+    first = client.post(ROUTE, json=body(), headers=auth())
+    retry = client.post(ROUTE, json=body(), headers=auth())
+
+    assert first.status_code == 504
+    assert first.json()["status"] == "unknown"
+    assert first.json()["retry_safe"] is False
+    assert retry.status_code == 504
+    assert retry.json()["status"] == "unknown"
+    assert retry.json()["replayed"] is True
+    assert len(fake.calls) == 1
+    assert DedupStore(store.path).get_outbound("refund:123").status == "unknown"
+
+
+def test_unexpected_client_error_is_recorded_unknown(wired):
+    store, install = wired
+    fake = install(RuntimeError("boom"))
+
+    response = TestClient(main.app).post(ROUTE, json=body(), headers=auth())
+
+    assert response.status_code == 504
+    assert response.json()["status"] == "unknown"
+    assert "RuntimeError" in response.json()["detail"]
+    assert store.get_outbound("refund:123").status == "unknown"
+    assert len(fake.calls) == 1
+
+
+def test_interrupted_pending_claim_replays_as_unknown_without_sending(wired):
+    store, install = wired
+    store.begin_outbound(
+        "refund:123",
+        45,
+        hashlib.sha256(body()["content"].encode("utf-8")).hexdigest(),
+        "lana",
+        "crashed-worker",
+    )
+    fake = install()
+
+    response = TestClient(main.app).post(ROUTE, json=body(), headers=auth())
+
+    assert response.status_code == 504
+    assert response.json()["status"] == "unknown"
+    assert response.json()["detail"] == "claim_pending_outcome_unknown"
+    assert response.json()["replayed"] is True
+    assert fake.calls == []
+
+
+def test_definitive_rejection_is_distinct_and_same_key_may_retry(wired):
+    store, install = wired
+    fake = install(
+        OutboundResult("rejected", 404, None, "HTTP 404: conversation not found"),
+        accepted(777),
+    )
+    client = TestClient(main.app)
+
+    rejected = client.post(ROUTE, json=body(), headers=auth())
+    retried = client.post(ROUTE, json=body(actor="retrier"), headers=auth())
+    replay = client.post(ROUTE, json=body(), headers=auth())
+
+    assert rejected.status_code == 502
+    assert rejected.json()["status"] == "rejected"
+    assert rejected.json()["http_status"] == 404
+    assert rejected.json()["retry_safe"] is True
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "accepted"
+    assert retried.json()["attempts"] == 2
+    assert retried.json()["replayed"] is False
+    assert replay.json()["replayed"] is True
+    assert len(fake.calls) == 2
+    history = store.outbound_attempts("refund:123")
+    assert [(row["actor"], row["status"]) for row in history] == [
+        ("lana", "rejected"),
+        ("retrier", "accepted"),
+    ]
+
+
+def test_key_reuse_for_different_message_conflicts_without_sending(wired):
+    store, install = wired
+    fake = install(accepted())
+    client = TestClient(main.app)
+
+    client.post(ROUTE, json=body(), headers=auth())
+    other_content = client.post(ROUTE, json=body(content="Different text"), headers=auth())
+    other_conversation = client.post(ROUTE, json=body(conversation_id=46), headers=auth())
+
+    assert other_content.status_code == 409
+    assert other_content.json()["detail"] == "idempotency_key_reused_for_different_message"
+    assert other_conversation.status_code == 409
+    assert len(fake.calls) == 1
+
+
+def test_content_is_sent_exactly_as_supplied(wired):
+    store, install = wired
+    fake = install(accepted())
+    content = "  Line one\n\nLine two  "
+
+    TestClient(main.app).post(ROUTE, json=body(content=content), headers=auth())
+
+    assert fake.calls == [(45, content)]
+
+
+def test_health_reports_outbound_configuration_without_secret(monkeypatch):
+    monkeypatch.setenv("BRIDGE_OUTBOUND_TOKEN", TOKEN)
+
+    health = TestClient(main.app).get("/health").json()
+
+    assert health["outbound_auth"] == "configured"
+    assert TOKEN not in str(health)

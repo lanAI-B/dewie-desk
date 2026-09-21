@@ -1,6 +1,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from state import DedupStore
 from parser import ParsedMessage
 
@@ -44,3 +46,108 @@ def test_normalized_inbound_message_is_persisted_once(tmp_path):
             "SELECT normalized_json FROM inbound_message WHERE account_id=1 AND message_id=42"
         ).fetchone()[0]
     assert json.loads(stored)["body"] == "Please help"
+
+
+def _begin(store, key="refund:123", conversation_id=45, digest="a" * 64, actor="lana"):
+    return store.begin_outbound(key, conversation_id, digest, actor, "test")
+
+
+def test_outbound_claim_is_durable_before_any_result(tmp_path):
+    path = tmp_path / "bridge.sqlite3"
+
+    verdict, record = _begin(DedupStore(path))
+    assert verdict == "claimed"
+    assert record.status == "pending"
+    assert record.attempts == 1
+
+    verdict, replay = _begin(DedupStore(path))
+    assert verdict == "replay"
+    assert replay.status == "pending"
+    assert replay.attempts == 1
+
+
+def test_outbound_accepted_is_terminal_and_replayed(tmp_path):
+    store = DedupStore(tmp_path / "bridge.sqlite3")
+    _begin(store)
+
+    finished = store.finish_outbound(
+        "refund:123", "accepted", chatwoot_message_id=501, http_status=200, detail="created"
+    )
+
+    assert finished.status == "accepted"
+    assert finished.chatwoot_message_id == 501
+    verdict, replay = _begin(DedupStore(store.path))
+    assert verdict == "replay"
+    assert replay.status == "accepted"
+    assert replay.chatwoot_message_id == 501
+
+
+def test_outbound_unknown_is_durable_and_never_reclaimed(tmp_path):
+    store = DedupStore(tmp_path / "bridge.sqlite3")
+    _begin(store)
+    store.finish_outbound("refund:123", "unknown", detail="ReadTimeout")
+
+    verdict, replay = _begin(DedupStore(store.path))
+
+    assert verdict == "replay"
+    assert replay.status == "unknown"
+    assert replay.attempts == 1
+
+
+def test_outbound_definitive_rejection_can_be_reattempted_with_same_key(tmp_path):
+    store = DedupStore(tmp_path / "bridge.sqlite3")
+    _begin(store, actor="first")
+    store.finish_outbound("refund:123", "rejected", http_status=404, detail="HTTP 404")
+
+    verdict, record = _begin(store, actor="second")
+
+    assert verdict == "claimed"
+    assert record.status == "pending"
+    assert record.attempts == 2
+    assert record.http_status is None
+    history = store.outbound_attempts("refund:123")
+    assert [(row["attempt"], row["actor"], row["status"]) for row in history] == [
+        (1, "first", "rejected"),
+        (2, "second", "pending"),
+    ]
+
+
+def test_outbound_key_reuse_with_different_request_conflicts(tmp_path):
+    store = DedupStore(tmp_path / "bridge.sqlite3")
+    _begin(store)
+
+    assert _begin(store, conversation_id=46)[0] == "conflict"
+    assert _begin(store, digest="b" * 64)[0] == "conflict"
+    store.finish_outbound("refund:123", "rejected", http_status=422, detail="bad")
+    assert _begin(store, digest="b" * 64)[0] == "conflict"
+    assert store.get_outbound("refund:123").attempts == 1
+
+
+def test_concurrent_outbound_claims_from_separate_stores_yield_one_attempt(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "bridge.sqlite3"
+    DedupStore(path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        verdicts = list(pool.map(lambda _: _begin(DedupStore(path))[0], range(16)))
+
+    assert verdicts.count("claimed") == 1
+    assert verdicts.count("replay") == 15
+    assert len(DedupStore(path).outbound_attempts("refund:123")) == 1
+
+
+def test_outbound_finish_only_moves_pending_records(tmp_path):
+    store = DedupStore(tmp_path / "bridge.sqlite3")
+    _begin(store)
+    store.finish_outbound("refund:123", "accepted", chatwoot_message_id=501, http_status=200)
+
+    with pytest.raises(ValueError):
+        store.finish_outbound("refund:123", "unknown", detail="late")
+    with pytest.raises(ValueError):
+        store.finish_outbound("refund:999", "accepted")
+    _begin(store, key="refund:124")
+    with pytest.raises(ValueError):
+        store.finish_outbound("refund:124", "pending")
+    assert store.get_outbound("refund:123").status == "accepted"
+    assert store.get_outbound("refund:124").status == "pending"

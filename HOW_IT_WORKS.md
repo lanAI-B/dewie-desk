@@ -67,7 +67,9 @@ curl http://localhost:8624/health      # -> {"ok":true,"dry_run":true,...}
 ```
 
 - **`BRIDGE_DRY_RUN`** in `.env`: `true` = draft to logs only (safe). `false` = post the
-  private note. It never *sends* to the customer regardless.
+  private note. The draft path never *sends* to the customer regardless.
+- **`BRIDGE_OUTBOUND_TOKEN`**: empty (default) disables the separate internal
+  customer-visible send endpoint. See `docs/chatwoot-outbound-transport.md`.
 - **Chatwoot** is `docker compose up/down` in `dewie-desk/`. The UI port is set by
   `CHATWOOT_HOST_PORT` (3001 in `.env.example`).
 - Ports: Chatwoot 3000, bridge 8624, (the live alpha desk is 8623 — untouched).
