@@ -1,6 +1,6 @@
 # Feature: safe Chatwoot outbound system-email transport
 
-Status: ready for PM re-review after privacy correction (local only; not deployed)
+Status: PM accepted (local implementation complete; not pushed or deployed)
 Tracking: this plan only; source queue task #6176 was closed as transferred after
 initial plan commit `48ccbe4`
 
@@ -244,8 +244,9 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
 - Remaining work: none in this slice. Not done by design: refund consumer,
   QA/Chatwoot contact, credentials, deployment, and any tooling to record a
   human reconciliation of an `unknown` key (a decision for the consumer slice).
-- Next step: PM re-reviews the correction commit against the ambiguous-outcome
-  criterion and the hash-only audit decision.
+- Next step: the transport dependency is satisfied. The separate DewieOps refund
+  consumer plan may begin its authorized local implementation slice. Attended QA
+  remains later, after that consumer is implemented and PM-accepted.
 - Blocker or decision needed: none for this slice. Separately, the PM may want
   the DewieOps-driven `test_main.py` baseline failure fixed on the base branch.
 
@@ -299,6 +300,22 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
   including code-shaped alphanumeric strings, must become `detail_withheld`.
 - QA/deployment: still not authorized by this plan; refund-consumer work remains
   dependency-blocked until final transport acceptance.
+
+### Final PM acceptance of `babd0d9` (2026-09-21)
+
+- Result: accepted. All transport acceptance criteria are satisfied locally.
+- Independent evidence: focused suite `72 passed`; full bridge suite `107 passed,
+  1 failed`; `git diff --check` clean; worktree clean and branch five local
+  commits ahead before this PM record. The only full-suite failure remains the
+  demonstrated unrelated sibling-DewieOps reason-code mismatch.
+- Privacy evidence: direct probes confirm `REFSECRET8841`,
+  `4111111111111111`, spoofed request/transport codes, and empty detail are
+  withheld, while `created`, `http_422`, and `request_error:ReadTimeout` survive
+  the explicit allowlist. The regression tests inspect both outbound tables.
+- Dependency disposition: the reusable dewie-desk transport is accepted for the
+  later refund consumer. The refund consumer may now start locally under its own
+  plan; this does not authorize QA contact, credentials, push, merge, deployment,
+  restart, production cutover, or any customer message.
 
 ## Manual Claude coder final privacy correction prompt
 
