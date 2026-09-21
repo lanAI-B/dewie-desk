@@ -1,7 +1,8 @@
 # Feature: safe Chatwoot outbound system-email transport
 
 Status: agreed; ready for one manual Claude coder run
-Tracking: this plan only; source queue task #6176 transfers here after this plan is committed
+Tracking: this plan only; source queue task #6176 was closed as transferred after
+initial plan commit `48ccbe4`
 
 ## Location and agreement (PM owns)
 
