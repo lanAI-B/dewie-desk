@@ -1,6 +1,6 @@
 # Feature: safe Chatwoot outbound system-email transport
 
-Status: ready for PM review (local implementation verified; not deployed)
+Status: PM changes requested (local implementation verified; not deployed)
 Tracking: this plan only; source queue task #6176 was closed as transferred after
 initial plan commit `48ccbe4`
 
@@ -65,22 +65,22 @@ Excluded from this run:
 
 ## Acceptance criteria (PM owns)
 
-- [ ] Public outgoing and private-note operations are separate APIs with fixed
+- [x] Public outgoing and private-note operations are separate APIs with fixed
       visibility; existing private-note behavior remains green.
-- [ ] Missing/invalid internal authentication fails closed before a claim or
+- [x] Missing/invalid internal authentication fails closed before a claim or
       Chatwoot API call.
-- [ ] The request requires a valid existing conversation ID, non-empty fixed
+- [x] The request requires a valid existing conversation ID, non-empty fixed
       content, stable idempotency key, and audit actor/source.
-- [ ] The durable claim precedes the Chatwoot call. A duplicate accepted request
+- [x] The durable claim precedes the Chatwoot call. A duplicate accepted request
       does not call Chatwoot again and returns the recorded accepted result.
-- [ ] A definitive pre-delivery/API rejection is distinguishable from an
+- [x] A definitive pre-delivery/API rejection is distinguishable from an
       ambiguous timeout or connection loss after dispatch.
 - [ ] Ambiguous state is durable and cannot be blindly retried into a duplicate.
-- [ ] Tests inspect the exact Chatwoot public-outgoing payload and prove no
+- [x] Tests inspect the exact Chatwoot public-outgoing payload and prove no
       customer send occurs during the suite.
-- [ ] Relevant bridge tests and the broader bridge suite pass from the package
+- [x] Relevant bridge tests and the broader bridge suite pass from the package
       root, or unrelated baseline failures are demonstrated precisely.
-- [ ] Only task-owned code/tests/docs are committed locally; no push or deployment.
+- [x] Only task-owned code/tests/docs are committed locally; no push or deployment.
 
 ## Implementation steps (coder maintains within agreed scope)
 
@@ -186,11 +186,68 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
 
 ## PM review
 
-- Result: not reviewed
-- Acceptance evidence: pending coder checkpoint
+- Result: changes requested on `e21227b`; architecture accepted, one safety
+  correction required before the ambiguous-outcome criterion can be accepted.
+- Independent PM evidence (2026-09-21): focused suite `56 passed`; full bridge
+  suite `91 passed, 1 failed`; `git diff --check` clean; worktree was clean and
+  branch was one local commit ahead. The sole full-suite failure reproduced the
+  reported sibling-DewieOps reason-code drift and is unrelated to this slice.
+- Accepted decisions:
+  - A definitively rejected attempt may reuse the same key as attempt N+1;
+    accepted, unknown, and pending keys remain non-resendable.
+  - Conversation/content reuse conflicts, token-only enablement, a 20000-character
+    content cap, and hash-only message storage are appropriate for this transport.
+  - Human reconciliation tooling is not required in this transport slice. The
+    refund consumer must stop on `unknown`; reconciliation remains attended.
+- Required correction:
+  - Once Chatwoot has been called, failure to persist the final result must not
+    escape as an ordinary unstructured 500. Return a structured, non-retryable
+    `unknown` response for the current request while leaving the durable claim
+    pending so every later replay is also frozen as `unknown`.
+  - Do not persist Chatwoot response bodies in `detail`; an error response can
+    echo customer content and would defeat the hash-only storage decision. Store
+    bounded, non-content-bearing evidence such as the HTTP status and outcome.
+  - Add focused tests proving both behaviors, including one where Chatwoot
+    returns accepted and `finish_outbound` then fails. The fake failure must
+    demonstrate a 504/body `status=unknown`, `retry_safe=false`, and a later
+    replay that does not call Chatwoot.
 - QA/deployment: not authorized by this plan; the linked personal QA inbox is
   reserved for the later attended QA prompt
-- Proposed scope changes: none
+- Proposed scope changes: none; this is a correction inside the existing
+  ambiguous-outcome and hash-only audit contract.
+
+## Manual Claude coder correction prompt
+
+```text
+Resume the manual feature-coder run for the PM correction. Read:
+C:\Users\Owner\source\repos\_wt\brain-pm-focus-20260921\agentic\FEATURE_CODER.md
+C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound\docs\feature-trial\plan.md
+
+Work only in C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound on
+feature/chatwoot-outbound-transport. The reviewed implementation commit is
+e21227b. Verify the worktree/branch and no active run marker before editing.
+
+Implement only the two required PM corrections recorded under `PM review`:
+1. After the Chatwoot call has occurred, a failure to persist the final result
+   must return a structured non-retryable unknown response (HTTP 504) for that
+   same request, while preserving the pending claim so replays remain frozen and
+   never call Chatwoot again. Do not convert pre-call database/claim failures into
+   ambiguous sends.
+2. Do not store Chatwoot response-body text in outbound `detail`; keep bounded,
+   non-content-bearing status/outcome evidence so message content remains hash-only.
+
+Add focused regression tests. At minimum, simulate Chatwoot returning accepted
+and then make final-state persistence fail; prove the current response is 504
+with status=unknown and retry_safe=false, and prove a later replay makes no
+Chatwoot call. Add a test proving a 4xx body that echoes the submitted content is
+not written to outbound_message or outbound_attempt.
+
+Run the focused outbound tests, then the full bridge suite, then git diff --check.
+Do not fix the unrelated sibling-DewieOps reason-code baseline failure in this
+slice. Update the checkpoint and commit the correction locally. Do not push,
+deploy, restart services, change credentials, contact Chatwoot, or send email.
+Stop ready for PM re-review and report the commit SHA and exact test results.
+```
 
 ## Manual Claude coder start prompt
 
