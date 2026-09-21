@@ -1,6 +1,6 @@
 # Feature: safe Chatwoot outbound system-email transport
 
-Status: ready for PM re-review after requested correction (local only; not deployed)
+Status: PM changes requested after re-review (local only; not deployed)
 Tracking: this plan only; source queue task #6176 was closed as transferred after
 initial plan commit `48ccbe4`
 
@@ -75,7 +75,7 @@ Excluded from this run:
       does not call Chatwoot again and returns the recorded accepted result.
 - [x] A definitive pre-delivery/API rejection is distinguishable from an
       ambiguous timeout or connection loss after dispatch.
-- [ ] Ambiguous state is durable and cannot be blindly retried into a duplicate.
+- [x] Ambiguous state is durable and cannot be blindly retried into a duplicate.
 - [x] Tests inspect the exact Chatwoot public-outgoing payload and prove no
       customer send occurs during the suite.
 - [x] Relevant bridge tests and the broader bridge suite pass from the package
@@ -254,6 +254,58 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
   reserved for the later attended QA prompt
 - Proposed scope changes: none; this is a correction inside the existing
   ambiguous-outcome and hash-only audit contract.
+
+### PM re-review of `6b87a5f` (2026-09-21)
+
+- Result: outcome-finalization correction accepted; one residual privacy edge
+  remains before final transport acceptance.
+- Independent evidence: focused suite `61 passed`; full bridge suite `96 passed,
+  1 failed` with the same unrelated sibling-DewieOps reason-code mismatch;
+  `git diff --check` clean; worktree clean and local branch three commits ahead.
+- Accepted: a post-call `finish_outbound` failure now returns structured
+  `504 unknown`, leaves the claim pending, and cannot cause a resend. A pre-call
+  claim failure remains an ordinary 500 and makes no Chatwoot call.
+- Remaining correction: `_safe_detail` currently accepts any string matching
+  `[A-Za-z0-9_:.-]{0,80}`. Direct PM probes showed `REFSECRET8841` and
+  `4111111111111111` are returned unchanged, so code-shaped customer/reference/
+  payment content can still be persisted. Replace the shape check with an
+  allowlist of the transport's known machine-code families. Unknown values,
+  including code-shaped alphanumeric strings, must become `detail_withheld`.
+- QA/deployment: still not authorized by this plan; refund-consumer work remains
+  dependency-blocked until final transport acceptance.
+
+## Manual Claude coder final privacy correction prompt
+
+```text
+Resume the manual feature-coder run for one final PM privacy correction. Read:
+C:\Users\Owner\source\repos\_wt\brain-pm-focus-20260921\agentic\FEATURE_CODER.md
+C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound\docs\feature-trial\plan.md
+
+Work only in C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound on
+feature/chatwoot-outbound-transport. The reviewed correction commit is 6b87a5f.
+Verify the worktree/branch and no active run marker before editing.
+
+The outcome-finalization correction is accepted. Fix only the residual detail
+redaction edge recorded in the PM re-review: `_safe_detail` must allowlist the
+known machine-code forms emitted by this transport, not accept arbitrary text
+merely because it consists of letters/digits/punctuation and is under 80 chars.
+Preserve the documented codes needed by the real client (for example `created`,
+`accepted_without_message_id`, `http_<three digits>`, and
+`request_error:<ErrorClass>`). Convert every unrecognized value to
+`detail_withheld`.
+
+Add regression coverage proving code-shaped content such as `REFSECRET8841` and
+`4111111111111111` is withheld from the response, outbound_message, and
+outbound_attempt. Keep the existing response-body, exception-message, and
+outcome-not-recorded tests green. Update wording that says any "plain code" is
+safe so the docs accurately describe an allowlist.
+
+Run the focused outbound tests, then the full bridge suite, then git diff --check.
+Do not address the unrelated sibling-DewieOps baseline failure. Update the coder
+checkpoint and commit locally. Do not push, deploy, restart, change credentials,
+contact Chatwoot, or send email. Stop ready for PM re-review and report the SHA
+and exact test results.
+```
 
 ## Manual Claude coder correction prompt
 
