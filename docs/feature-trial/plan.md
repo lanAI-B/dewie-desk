@@ -1,6 +1,6 @@
 # Feature: safe Chatwoot outbound system-email transport
 
-Status: PM changes requested (local implementation verified; not deployed)
+Status: ready for PM re-review after requested correction (local only; not deployed)
 Tracking: this plan only; source queue task #6176 was closed as transferred after
 initial plan commit `48ccbe4`
 
@@ -108,8 +108,46 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
 
 ## Current checkpoint (coder maintains)
 
-- Active run: none — manual Claude coder run of 2026-09-21 ended **ready for PM review**
-- Observed state at start: worktree clean at `b0d76ff` on
+- Active run: none — manual Claude coder correction run of 2026-09-21 ended
+  **ready for PM re-review**
+- Correction run (2026-09-21), started clean at `6477bdc` with no active marker;
+  one local commit on top (SHA reported in the handoff). Not pushed.
+  - Correction 1 (`bridge/outbound.py`): once Chatwoot has been called, a
+    `finish_outbound` failure now returns a structured `504` `status=unknown`,
+    `retry_safe=false`, `detail=outcome_not_recorded` for that request. The
+    claim stays `pending`, so replays are `unknown` and never call Chatwoot.
+    The Chatwoot outcome/message ID/HTTP status and the error class are logged
+    without content. Claim (`begin_outbound`) failures still happen before any
+    send and surface as an ordinary 500, not as an ambiguous send.
+  - Correction 2 (`bridge/chatwoot.py`, `bridge/outbound.py`): the public path no
+    longer puts Chatwoot response bodies or exception messages in `detail`. The
+    client emits only `http_<status>`, `request_error:<ErrorClass>`,
+    `accepted_without_message_id`, or `created`; the service stores
+    `transport_error:<ErrorClass>` for unexpected errors and replaces any
+    client detail that is not a plain code with `detail_withheld`. The
+    private-note path is unchanged.
+  - New tests (`bridge/tests/test_outbound_endpoint.py`):
+    `test_accepted_send_whose_outcome_cannot_be_recorded_is_frozen_unknown`
+    (Chatwoot accepts, persistence fails: 504/unknown/retry_safe=false, replay
+    makes no call, row still pending),
+    `test_claim_failure_before_the_call_is_not_reported_as_ambiguous`,
+    `test_rejection_body_echoing_content_is_not_persisted` (real client, 422
+    body echoing content; neither `outbound_message` nor `outbound_attempt`
+    contains it), `test_exception_message_echoing_content_is_not_persisted`,
+    `test_free_text_client_detail_is_withheld_before_storage`; plus an exact
+    `http_<status>` detail assertion in `test_chatwoot.py`.
+  - Red check: with `e21227b`'s `chatwoot.py`/`outbound.py` temporarily restored,
+    5 of the new/updated tests failed; with the correction, all pass.
+  - Docs: `docs/chatwoot-outbound-transport.md` describes the detail codes, the
+    `outcome_not_recorded` case, and pre-call claim failures.
+  - Checks (from `bridge`, DewieOps sibling at `11d4fd5`):
+    `tests/test_chatwoot.py tests/test_state.py`: 23 passed;
+    plus `tests/test_outbound_endpoint.py`: 61 passed;
+    `tests -q`: 96 passed, 1 failed (the same unrelated
+    `test_main.py::test_system_sender_skips_before_classifier_runtime_is_built`
+    DewieOps reason-code baseline failure, left untouched as instructed);
+    `git diff --check`: clean.
+- First run, observed state at start: worktree clean at `b0d76ff` on
   `feature/chatwoot-outbound-transport`; no active run marker; no `.env` present.
 - Changes/commits: one local commit on this branch containing code, tests, docs,
   and this checkpoint (SHA reported in the handoff). Not pushed.
@@ -180,7 +218,8 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
 - Remaining work: none in this slice. Not done by design: refund consumer,
   QA/Chatwoot contact, credentials, deployment, and any tooling to record a
   human reconciliation of an `unknown` key (a decision for the consumer slice).
-- Next step: PM reviews this commit against the acceptance criteria.
+- Next step: PM re-reviews the correction commit against the ambiguous-outcome
+  criterion and the hash-only audit decision.
 - Blocker or decision needed: none for this slice. Separately, the PM may want
   the DewieOps-driven `test_main.py` baseline failure fixed on the base branch.
 

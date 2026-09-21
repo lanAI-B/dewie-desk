@@ -150,6 +150,7 @@ def test_public_outgoing_definitive_http_rejections(monkeypatch):
         assert result.outcome == "rejected", status
         assert result.status_code == status
         assert result.message_id is None
+        assert result.detail == f"http_{status}"
 
 
 def test_public_outgoing_ambiguous_http_responses_are_unknown(monkeypatch):

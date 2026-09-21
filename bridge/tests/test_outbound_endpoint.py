@@ -282,7 +282,7 @@ def test_interrupted_pending_claim_replays_as_unknown_without_sending(wired):
 def test_definitive_rejection_is_distinct_and_same_key_may_retry(wired):
     store, install = wired
     fake = install(
-        OutboundResult("rejected", 404, None, "HTTP 404: conversation not found"),
+        OutboundResult("rejected", 404, None, "http_404"),
         accepted(777),
     )
     client = TestClient(main.app)
@@ -340,3 +340,132 @@ def test_health_reports_outbound_configuration_without_secret(monkeypatch):
 
     assert health["outbound_auth"] == "configured"
     assert TOKEN not in str(health)
+
+
+def test_accepted_send_whose_outcome_cannot_be_recorded_is_frozen_unknown(
+    wired, monkeypatch
+):
+    store, install = wired
+    fake = install(accepted(501))
+    real_finish = store.finish_outbound
+    failing = [True]
+
+    def flaky_finish(*args, **kwargs):
+        if failing[0]:
+            raise sqlite3.OperationalError("database is locked")
+        return real_finish(*args, **kwargs)
+
+    monkeypatch.setattr(store, "finish_outbound", flaky_finish)
+    client = TestClient(main.app)
+
+    first = client.post(ROUTE, json=body(), headers=auth())
+    failing[0] = False  # the store works again; the claim must still be frozen
+    replay = client.post(ROUTE, json=body(), headers=auth())
+
+    assert first.status_code == 504
+    assert first.json()["status"] == "unknown"
+    assert first.json()["retry_safe"] is False
+    assert first.json()["replayed"] is False
+    assert first.json()["detail"] == "outcome_not_recorded"
+    assert replay.status_code == 504
+    assert replay.json()["status"] == "unknown"
+    assert replay.json()["retry_safe"] is False
+    assert replay.json()["replayed"] is True
+    assert fake.calls == [(45, body()["content"])]
+    assert DedupStore(store.path).get_outbound("refund:123").status == "pending"
+
+
+def test_claim_failure_before_the_call_is_not_reported_as_ambiguous(wired, monkeypatch):
+    store, install = wired
+    fake = install(accepted())
+
+    def broken_begin(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(store, "begin_outbound", broken_begin)
+
+    response = TestClient(main.app, raise_server_exceptions=False).post(
+        ROUTE, json=body(), headers=auth()
+    )
+
+    assert response.status_code == 500
+    assert fake.calls == []
+    assert store.get_outbound("refund:123") is None
+
+
+def _stored_text(path):
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute("SELECT * FROM outbound_message").fetchall()
+        rows += connection.execute("SELECT * FROM outbound_attempt").fetchall()
+    return rows, " ".join(str(value) for row in rows for value in row)
+
+
+def test_rejection_body_echoing_content_is_not_persisted(wired, monkeypatch):
+    import chatwoot
+
+    store, _ = wired
+    content = "Refund REF-SECRET-8841 for Pat Example was issued."
+
+    class Echo:
+        status_code = 422
+        text = f'{{"error": "could not create message: {content}"}}'
+
+        def json(self):
+            return {"error": f"could not create message: {content}"}
+
+    monkeypatch.setattr("chatwoot.requests.post", lambda *args, **kwargs: Echo())
+    monkeypatch.setattr(
+        main, "chatwoot_client", lambda: chatwoot.ChatwootClient("http://desk", "1", "token")
+    )
+
+    response = TestClient(main.app).post(ROUTE, json=body(content=content), headers=auth())
+
+    assert response.status_code == 502
+    assert response.json()["status"] == "rejected"
+    assert response.json()["http_status"] == 422
+    assert response.json()["detail"] == "http_422"
+    assert "REF-SECRET-8841" not in response.text
+    rows, stored = _stored_text(store.path)
+    assert len(rows) == 2
+    assert "REF-SECRET-8841" not in stored
+    assert "Pat Example" not in stored
+
+
+def test_exception_message_echoing_content_is_not_persisted(wired, monkeypatch):
+    import chatwoot
+    import requests
+
+    store, _ = wired
+    content = "Refund REF-SECRET-8841 was issued."
+
+    def post(*args, **kwargs):
+        raise requests.ReadTimeout(f"timed out sending {content}")
+
+    monkeypatch.setattr("chatwoot.requests.post", post)
+    monkeypatch.setattr(
+        main, "chatwoot_client", lambda: chatwoot.ChatwootClient("http://desk", "1", "token")
+    )
+
+    response = TestClient(main.app).post(ROUTE, json=body(content=content), headers=auth())
+
+    assert response.json()["status"] == "unknown"
+    assert response.json()["detail"] == "request_error:ReadTimeout"
+    assert "REF-SECRET-8841" not in _stored_text(store.path)[1]
+
+
+def test_free_text_client_detail_is_withheld_before_storage(wired):
+    store, install = wired
+    install(
+        OutboundResult("rejected", 400, None, "HTTP 400: Refund REF-SECRET-8841"),
+        RuntimeError("failed on Refund REF-SECRET-8841"),
+    )
+    client = TestClient(main.app)
+
+    rejected = client.post(ROUTE, json=body(idempotency_key="k1"), headers=auth())
+    unknown = client.post(
+        ROUTE, json=body(idempotency_key="k2", content="Other text"), headers=auth()
+    )
+
+    assert rejected.json()["detail"] == "detail_withheld"
+    assert unknown.json()["detail"] == "transport_error:RuntimeError"
+    assert "REF-SECRET-8841" not in _stored_text(store.path)[1]

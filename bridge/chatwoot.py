@@ -128,18 +128,21 @@ class ChatwootClient:
                 headers=self._headers,
                 timeout=self.timeout,
             )
+        # Details name only the error class or HTTP status: exception messages and
+        # response bodies can echo the customer message, which is stored hash-only.
         except _PRE_DISPATCH_ERRORS as exc:
-            return OutboundResult("rejected", detail=f"{type(exc).__name__}: {exc}")
+            return OutboundResult("rejected", detail=f"request_error:{type(exc).__name__}")
         except requests.ConnectionError as exc:
-            outcome: Outcome = "rejected" if _connection_refused(exc) else "unknown"
-            return OutboundResult(outcome, detail=f"{type(exc).__name__}: {exc}")
+            if _connection_refused(exc):
+                return OutboundResult("rejected", detail="request_error:ConnectionRefused")
+            return OutboundResult("unknown", detail=f"request_error:{type(exc).__name__}")
         except requests.RequestException as exc:
-            return OutboundResult("unknown", detail=f"{type(exc).__name__}: {exc}")
+            return OutboundResult("unknown", detail=f"request_error:{type(exc).__name__}")
 
         status = response.status_code
         if status // 100 != 2:
             outcome = "rejected" if status in _DEFINITIVE_REJECTIONS else "unknown"
-            return OutboundResult(outcome, status, detail=f"HTTP {status}: {response.text[:300]}")
+            return OutboundResult(outcome, status, detail=f"http_{status}")
         try:
             message_id = response.json().get("id")
         except (ValueError, AttributeError):

@@ -79,7 +79,7 @@ Every claimed request returns this body:
 | --- | --- | --- | --- |
 | `accepted` | 200 | Chatwoot returned a created message ID. | Done. Resubmitting the key returns the same record (`replayed: true`) without calling Chatwoot. |
 | `rejected` | 502 | Definitive: Chatwoot answered 400/401/403/404/405/409/413/415/422/429, or the connection failed before the request could be sent (connect timeout, refused, invalid URL). No message exists. | `retry_safe: true`. Fix the cause and resubmit the **same** key; that becomes attempt N+1. |
-| `unknown` | 504 | The request may have reached Chatwoot: read timeout, dropped connection, 408/5xx, 2xx without a message ID, an unexpected transport error, or an earlier attempt that is still in flight or died after claiming (`detail: claim_pending_outcome_unknown`). | **Do not resend.** The key is frozen; every resubmission returns `unknown` without calling Chatwoot. A human checks the conversation. |
+| `unknown` | 504 | The request may have reached Chatwoot: read timeout, dropped connection, 408/5xx, 2xx without a message ID, an unexpected transport error, or an outcome that could not be recorded (`detail: outcome_not_recorded`), or an earlier attempt that is still in flight or died after claiming (`detail: claim_pending_outcome_unknown`). | **Do not resend.** The key is frozen; every resubmission returns `unknown` without calling Chatwoot. A human checks the conversation. |
 
 Always branch on `status`, not the HTTP code alone.
 
@@ -94,10 +94,22 @@ State lives in the bridge SQLite database (`BRIDGE_STATE_DB`):
 - `outbound_attempt` — append-only history per attempt with its actor, source,
   outcome, and start/finish times.
 
+Message content is stored only as its hash. `detail` is a short machine code,
+never Chatwoot response text or an exception message, because either can echo
+the message: `created`, `http_<status>`, `request_error:<ErrorClass>`,
+`transport_error:<ErrorClass>`, `accepted_without_message_id`, or
+`detail_withheld` when a client detail is not a plain code.
+
 The claim uses a SQLite `BEGIN IMMEDIATE` transaction, so concurrent duplicate
-requests (threads or processes sharing the file) produce one attempt. If the
-bridge dies between the Chatwoot call and recording its outcome, the row stays
-`pending`, which replays as `unknown`.
+requests (threads or processes sharing the file) produce one attempt. A failure
+while claiming happens before any send and surfaces as an ordinary `500`; it is
+not an ambiguous outcome. If the bridge dies between the Chatwoot call and
+recording its outcome, the row stays `pending`, which replays as `unknown`. If
+the outcome cannot be written after Chatwoot answered, that request gets a
+`504 unknown` with `detail: outcome_not_recorded` and `retry_safe: false`; the
+row stays `pending`, so every later replay is also `unknown` without a call.
+The Chatwoot outcome and message ID from that attempt are logged (without
+content) at error level for reconciliation.
 
 ## Reconciling `unknown`
 

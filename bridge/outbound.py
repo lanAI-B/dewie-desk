@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -27,6 +28,9 @@ MIN_TOKEN_LENGTH = 32
 # Secrets with another purpose must never double as the outbound credential.
 _OTHER_SECRETS = ("CHATWOOT_WEBHOOK_SECRET", "CHATWOOT_API_TOKEN")
 _BEARER = re.compile(r"Bearer ([^\s]+)")
+_SAFE_DETAIL = re.compile(r"[A-Za-z0-9_:.\-]{0,80}")
+
+log = logging.getLogger("dewie-desk-bridge.outbound")
 
 HTTP_STATUS = {"accepted": 200, "rejected": 502, "unknown": 504}
 
@@ -101,13 +105,24 @@ def content_digest(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _response(record: OutboundRecord, *, replayed: bool) -> tuple[int, dict]:
+def _safe_detail(detail: object) -> str:
+    """Keep only short machine codes; anything else could carry message content."""
+    value = detail if isinstance(detail, str) else ""
+    return value if _SAFE_DETAIL.fullmatch(value) else "detail_withheld"
+
+
+def _response(
+    record: OutboundRecord,
+    *,
+    replayed: bool,
+    pending_detail: str = "claim_pending_outcome_unknown",
+) -> tuple[int, dict]:
     status = record.status
     detail = record.detail
     if status == "pending":
-        # Another attempt is in flight or died after claiming; either way a
-        # message may exist, so the caller must not treat this as retryable.
-        status, detail = "unknown", "claim_pending_outcome_unknown"
+        # Another attempt is in flight, died after claiming, or could not record
+        # its outcome; a message may exist, so this is never retryable.
+        status, detail = "unknown", pending_detail
     return HTTP_STATUS[status], {
         "status": status,
         "idempotency_key": record.idempotency_key,
@@ -139,19 +154,34 @@ def deliver(store: DedupStore, client, request: OutboundRequest) -> tuple[int, d
     if verdict == "replay":
         return _response(record, replayed=True)
 
+    # Claim failures above propagate: nothing has been sent, so they are not
+    # ambiguous. From here on Chatwoot may have been called.
     try:
         result = client.post_public_outgoing(request.conversation_id, request.content)
         outcome, message_id = result.outcome, result.message_id
-        http_status, detail = result.status_code, result.detail
+        http_status, detail = result.status_code, _safe_detail(result.detail)
     except Exception as exc:
         outcome, message_id, http_status = "unknown", None, None
-        detail = f"transport_error {type(exc).__name__}: {exc}"
-    # If recording fails the claim stays pending, which replays as unknown.
-    record = store.finish_outbound(
-        request.idempotency_key,
-        outcome,
-        chatwoot_message_id=message_id,
-        http_status=http_status,
-        detail=detail[:500],
-    )
+        detail = f"transport_error:{type(exc).__name__}"
+    try:
+        record = store.finish_outbound(
+            request.idempotency_key,
+            outcome,
+            chatwoot_message_id=message_id,
+            http_status=http_status,
+            detail=detail,
+        )
+    except Exception as exc:
+        # The claim stays pending, so every replay is also frozen as unknown.
+        log.error(
+            "outbound outcome not recorded key=%s conversation=%s outcome=%s message=%s "
+            "http=%s error=%s",
+            request.idempotency_key,
+            request.conversation_id,
+            outcome,
+            message_id,
+            http_status,
+            type(exc).__name__,
+        )
+        return _response(record, replayed=False, pending_detail="outcome_not_recorded")
     return _response(record, replayed=False)
