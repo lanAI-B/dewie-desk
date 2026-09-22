@@ -23,7 +23,7 @@ import requests
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from chatwoot import ChatwootError
-from conversations import recipient_of
+from conversations import recipient_on_any
 from state import DedupStore, OutboundRecord
 
 TOKEN_ENV = "BRIDGE_OUTBOUND_TOKEN"
@@ -196,19 +196,19 @@ def _claim_failed(request: OutboundRequest) -> tuple[int, dict]:
     }
 
 
-def _recipient_problem(client, request: OutboundRequest, inbox_id: int) -> str | None:
+def _recipient_problem(client, request: OutboundRequest, inbox_ids) -> str | None:
     try:
         details = client.conversation_details(request.conversation_id)
     except (ChatwootError, KeyError, TypeError, ValueError):
         return "recipient_unverified"
-    found = recipient_of(details, inbox_id)
+    found = recipient_on_any(details, inbox_ids)
     if found is None or found.casefold() != request.recipient_email.strip().casefold():
         return "recipient_mismatch"
     return None
 
 
 def deliver(store: DedupStore, client, request: OutboundRequest,
-            inbox_id: int) -> tuple[int, dict]:
+            inbox_ids) -> tuple[int, dict]:
     """Claim, verify the recipient, send at most once, and durably record the outcome."""
     try:
         verdict, record = store.begin_outbound(
@@ -229,7 +229,7 @@ def deliver(store: DedupStore, client, request: OutboundRequest,
 
     # A fresh claim. Re-read the conversation now, not at resolve time: a refusal
     # here is definitive (nothing was posted), so it is recorded as rejected.
-    problem = _recipient_problem(client, request, inbox_id)
+    problem = _recipient_problem(client, request, inbox_ids)
     if problem is not None:
         outcome, message_id, http_status, detail = "rejected", None, None, problem
     else:

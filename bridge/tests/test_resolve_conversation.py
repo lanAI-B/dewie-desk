@@ -11,6 +11,7 @@ import requests
 from fastapi.testclient import TestClient
 
 import chatwoot
+import conversations
 import main
 from chatwoot import ChatwootClient, ChatwootError
 
@@ -22,7 +23,7 @@ EMAIL = "ann.example@example.com"
 
 def body(**updates):
     value = {"email": EMAIL, "subject": "Refund Update: Order #1113621", "name": "Ann Example",
-             "actor": "discord:1", "source": "dewieops-refund-button"}
+             "actor": "discord:1", "source": "dewieops-refund-button", "store": "actex"}
     value.update(updates)
     return value
 
@@ -281,3 +282,45 @@ def test_real_client_reads_every_page_of_contacts(monkeypatch):
     found = ChatwootClient("http://cw", "2", "t").find_contacts_by_email(EMAIL)
     assert [c["id"] for c in found] == [2, 3], "a duplicate on page 2 must still be seen"
     assert [p["page"] for _, _, _, p in rec.calls] == [1, 2]
+
+
+# ── per-store inbox routing ──────────────────────────────────────────────────
+
+def test_inbox_map_parses_per_store(monkeypatch):
+    monkeypatch.setenv("BRIDGE_OUTBOUND_INBOX_IDS", "abs:1,actex:3")
+    assert conversations.configured_inboxes() == {"abs": 1, "actex": 3}
+
+
+def test_a_single_inbox_still_serves_every_store(monkeypatch):
+    monkeypatch.delenv("BRIDGE_OUTBOUND_INBOX_IDS", raising=False)
+    monkeypatch.setenv("BRIDGE_OUTBOUND_INBOX_ID", "2")
+    assert conversations.configured_inboxes() == {"abs": 2, "actex": 2}
+
+
+@pytest.mark.parametrize("raw", [
+    "abs:1,actex", "abs:1,shop:3", "abs:0,actex:3", "abs:one,actex:3",
+    "abs:1,actex:-3", "abs:١,actex:3",
+])
+def test_one_malformed_pair_refuses_every_store(monkeypatch, raw):
+    """A config typo must not silently route half the stores."""
+    monkeypatch.setenv("BRIDGE_OUTBOUND_INBOX_IDS", raw)
+    assert conversations.configured_inboxes() == {}
+
+
+def test_resolve_requires_a_known_store():
+    for bad in ({}, {"store": "shop"}, {"store": ""}, {"store": None}, {"store": "ABS"}):
+        payload = {"email": "a@b.co", "subject": "Refund Update: Order #1", "actor": "discord:1",
+                   "source": "dewieops-refund-button", **bad}
+        with pytest.raises(ValueError):
+            conversations.parse_request(payload)
+
+
+def test_a_send_accepts_any_configured_inbox_but_still_checks_the_recipient():
+    """Store routing decides where a NEW thread opens; it is not a send-time gate."""
+    on_abs = {"inbox_id": 1, "meta": {"channel": "Channel::Email",
+                                      "sender": {"email": "ann@example.com"}}}
+    assert conversations.recipient_on_any(on_abs, frozenset({1, 3})) == "ann@example.com"
+    assert conversations.recipient_on_any(on_abs, frozenset({3})) is None
+    widget = {"inbox_id": 1, "meta": {"channel": "Channel::WebWidget",
+                                      "sender": {"email": "ann@example.com"}}}
+    assert conversations.recipient_on_any(widget, frozenset({1, 3})) is None

@@ -22,13 +22,19 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from chatwoot import ChatwootError
 
 INBOX_ENV = "BRIDGE_OUTBOUND_INBOX_ID"
+# Per-store inboxes: "abs:1,actex:3". A refund for an ABS order must go out from
+# the ABS inbox — the reply-to is the address the customer will answer, and it
+# has to be the one that store's mail is worked from. The single-inbox variable
+# above remains for a one-store deployment and as the fallback for both.
+INBOXES_ENV = "BRIDGE_OUTBOUND_INBOX_IDS"
+STORES = ("abs", "actex")
 
 log = logging.getLogger("dewie-desk-bridge.conversations")
 
@@ -43,11 +49,41 @@ class ResolveRequest(BaseModel):
     name: Label | None = None
     actor: Label
     source: Label
+    # Which store's inbox this conversation belongs on. Required: guessing the
+    # sending brand is how a customer gets a refund notice from the wrong shop.
+    store: Literal["abs", "actex"]
+
+
+def _inbox_id(raw: str) -> int | None:
+    raw = raw.strip()
+    return int(raw) if raw.isascii() and raw.isdigit() and int(raw) > 0 else None
 
 
 def configured_inbox() -> int | None:
-    raw = (os.environ.get(INBOX_ENV) or "").strip()
-    return int(raw) if raw.isascii() and raw.isdigit() and int(raw) > 0 else None
+    """The single-inbox setting, used when no per-store map is configured."""
+    return _inbox_id(os.environ.get(INBOX_ENV) or "")
+
+
+def configured_inboxes() -> dict[str, int]:
+    """store -> inbox id. Falls back to the single inbox for every store.
+
+    Parsed strictly: one malformed pair yields an empty map and the endpoint
+    refuses, rather than silently routing half the stores. Same reasoning as the
+    old notifier allowlist — a config typo must not become a guess about where a
+    customer's mail comes from.
+    """
+    raw = (os.environ.get(INBOXES_ENV) or "").strip()
+    if not raw:
+        single = configured_inbox()
+        return {store: single for store in STORES} if single else {}
+    mapping: dict[str, int] = {}
+    for pair in raw.replace(";", ",").split(","):
+        store, _, value = pair.partition(":")
+        inbox = _inbox_id(value)
+        if store.strip() not in STORES or inbox is None:
+            return {}
+        mapping[store.strip()] = inbox
+    return mapping
 
 
 def parse_request(payload: object) -> ResolveRequest:
@@ -85,6 +121,22 @@ def recipient_of(details: dict, inbox_id: int) -> str | None:
         return None
     email = str((meta.get("sender") or {}).get("email") or "").strip()
     return email or None
+
+
+def recipient_on_any(details: dict, inbox_ids) -> str | None:
+    """As `recipient_of`, but for a send, where any configured inbox is legitimate.
+
+    Sending does not need to know the store. The property that keeps a customer
+    from getting someone else's refund is "this conversation is on an inbox we
+    send from, it is an email channel, and it belongs to the stated recipient" —
+    store routing only decides which inbox a NEW conversation is opened on.
+    Requiring the store here too would add a second way to fail and no safety.
+    """
+    for inbox_id in inbox_ids:
+        found = recipient_of(details, inbox_id)
+        if found is not None:
+            return found
+    return None
 
 
 def _belongs(details: dict, email: str, inbox_id: int) -> bool:

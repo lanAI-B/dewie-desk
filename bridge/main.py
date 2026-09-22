@@ -350,13 +350,14 @@ async def chatwoot_outbound_message(request: Request) -> JSONResponse:
         _increment("outbound_invalid_request")
         raise HTTPException(status_code=422, detail=str(exc))
 
-    inbox_id = conversations.configured_inbox()
-    if inbox_id is None:
-        # The recipient check needs to know which email inbox is legitimate.
+    inboxes = conversations.configured_inboxes()
+    if not inboxes:
+        # The recipient check needs to know which email inboxes are legitimate.
         raise HTTPException(status_code=503, detail="outbound_inbox_not_configured")
     try:
         status_code, result = await run_in_threadpool(
-            outbound.deliver, dedup_store(), chatwoot_client(), parsed, inbox_id
+            outbound.deliver, dedup_store(), chatwoot_client(), parsed,
+            frozenset(inboxes.values()),
         )
     except outbound.IdempotencyConflict as exc:
         _increment("outbound_idempotency_conflict")
@@ -386,8 +387,8 @@ async def chatwoot_resolve_conversation(request: Request) -> JSONResponse:
     if not verdict.ok:
         _increment("resolve_auth_rejected")
         raise HTTPException(status_code=verdict.status_code, detail=verdict.reason)
-    inbox_id = conversations.configured_inbox()
-    if inbox_id is None:
+    inboxes = conversations.configured_inboxes()
+    if not inboxes:
         raise HTTPException(status_code=503, detail="outbound_inbox_not_configured")
     try:
         payload = json.loads(await request.body())
@@ -399,13 +400,17 @@ async def chatwoot_resolve_conversation(request: Request) -> JSONResponse:
         _increment("resolve_invalid_request")
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # Route by store: the reply-to a customer answers must be their own shop's.
+    inbox_id = inboxes.get(parsed.store)
+    if inbox_id is None:
+        raise HTTPException(status_code=503, detail="outbound_inbox_not_configured")
     status_code, result = await run_in_threadpool(
         conversations.resolve, chatwoot_client(), parsed, inbox_id)
     _increment(f"resolve_{result['status']}")
     # No email in the log: the conversation and contact ids identify it.
-    log.info("resolve status=%s conversation=%s contact=%s inbox=%s actor=%s source=%s",
+    log.info("resolve status=%s conversation=%s contact=%s store=%s inbox=%s actor=%s source=%s",
              result["status"], result.get("conversation_id"), result.get("contact_id"),
-             inbox_id, parsed.actor, parsed.source)
+             parsed.store, inbox_id, parsed.actor, parsed.source)
     return JSONResponse(status_code=status_code, content=result)
 
 
