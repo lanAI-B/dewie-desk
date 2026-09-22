@@ -141,10 +141,11 @@ Authorization: Bearer <BRIDGE_OUTBOUND_TOKEN>
  "name": "Ann Example", "actor": "discord:1", "source": "dewieops-refund-button"}
 ```
 
-- Returns the contact's most recently active conversation in the email inbox
-  named by `BRIDGE_OUTBOUND_INBOX_ID` (`status: found`). If there is none, it
-  creates the contact and/or an **empty** conversation with that mail subject
-  (`status: created`). Creating a conversation posts no message, so nothing is
+- Returns the contact's conversation **with that exact mail subject** in the
+  email inbox named by `BRIDGE_OUTBOUND_INBOX_ID` (`status: found`), so a notice
+  keeps its own thread and a repeated call reuses it. It never picks an unrelated
+  thread. If there is none, it creates the contact and/or an **empty**
+  conversation with that mail subject (`status: created`). Creating a conversation posts no message, so nothing is
   emailed; the customer-visible message still goes only through
   `/internal/chatwoot/outbound-message`.
 - Every returned conversation is re-read and must belong to exactly that email

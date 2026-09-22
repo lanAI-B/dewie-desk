@@ -1,9 +1,12 @@
 """Find or open the Chatwoot conversation an internal sender should reply in.
 
 Nobody on the team should have to look up a conversation id. A trusted caller
-(first: the DewieOps refund notice) names the customer's email; the bridge
-returns that contact's most recently active conversation in the configured email
-inbox, or opens a new, empty one with the caller's subject when none exists.
+(first: the DewieOps refund notice) names the customer's email and a subject; the
+bridge returns that contact's conversation WITH THAT SUBJECT in the configured
+email inbox, or opens a new, empty one with it. A notice therefore gets its own
+thread ("Refund Update: Order #N") instead of landing in whatever unrelated thread
+the customer last wrote (Lana, 2026-09-22); running the same caller twice reuses
+the thread rather than opening a duplicate.
 
 Creating a conversation posts no message, so nothing is emailed here. The
 customer-visible message still goes only through the idempotent outbound
@@ -63,6 +66,10 @@ def _activity(conversation: dict) -> tuple:
     )
 
 
+def _subject(conversation: dict) -> str:
+    return " ".join(str((conversation.get("additional_attributes") or {}).get("mail_subject") or "").split())
+
+
 def _belongs(details: dict, email: str, inbox_id: int) -> bool:
     sender = ((details.get("meta") or {}).get("sender") or {})
     return (details.get("inbox_id") == inbox_id
@@ -81,8 +88,10 @@ def resolve(client, request: ResolveRequest, inbox_id: int) -> tuple[int, dict]:
         conversation_id = None
         if contacts:
             contact_id = contacts[0]["id"]
+            subject = " ".join(request.subject.split())
             mine = [c for c in client.contact_conversations(contact_id)
-                    if c.get("inbox_id") == inbox_id and isinstance(c.get("id"), int)]
+                    if c.get("inbox_id") == inbox_id and isinstance(c.get("id"), int)
+                    and _subject(c) == subject]
             if mine:
                 conversation_id = max(mine, key=_activity)["id"]
         else:

@@ -89,14 +89,20 @@ def client(monkeypatch):
     return TestClient(main.app), install
 
 
-def test_existing_conversation_is_found_most_recent_in_the_inbox(client):
+def _conv(cid, subject="Refund Update: Order #1113621", inbox=INBOX, at=0):
+    return {"id": cid, "inbox_id": inbox, "last_activity_at": at,
+            "additional_attributes": {"mail_subject": subject}}
+
+
+def test_the_notices_own_thread_is_reused(client):
     http, install = client
     fake = install(FakeChatwoot(
         contacts=[{"id": 2, "email": EMAIL}],
         conversations=[
-            {"id": 5, "inbox_id": INBOX, "last_activity_at": 100},
-            {"id": 9, "inbox_id": INBOX, "last_activity_at": 300},
-            {"id": 12, "inbox_id": 99, "last_activity_at": 999},   # other inbox: never chosen
+            _conv(5, at=100),
+            _conv(9, at=300),
+            _conv(12, inbox=99, at=999),                           # other inbox: never chosen
+            _conv(14, subject="Where is my book?", at=5000),       # unrelated thread: never chosen
         ]))
     r = http.post(ROUTE, json=body(), headers=auth())
     assert r.status_code == 200
@@ -105,10 +111,27 @@ def test_existing_conversation_is_found_most_recent_in_the_inbox(client):
     assert not any(c[0].startswith("create") for c in fake.calls)
 
 
+def test_an_unrelated_recent_thread_is_never_used(client):
+    """Lana, 2026-09-22: a notice gets its own thread, never the customer's latest one."""
+    http, install = client
+    fake = install(FakeChatwoot(contacts=[{"id": 2, "email": EMAIL}],
+                                conversations=[_conv(9, subject="get ready for RET 101", at=999)]))
+    r = http.post(ROUTE, json=body(), headers=auth())
+    assert r.status_code == 200 and r.json()["status"] == "created"
+    assert r.json()["conversation_id"] != 9
+
+
+def test_subject_match_ignores_spacing_but_not_the_order_number(client):
+    http, install = client
+    install(FakeChatwoot(contacts=[{"id": 2, "email": EMAIL}], conversations=[
+        _conv(7, subject="Refund Update:  Order #1113621 "), _conv(8, subject="Refund Update: Order #1113622")]))
+    assert http.post(ROUTE, json=body(), headers=auth()).json()["conversation_id"] == 7
+
+
 def test_contact_without_conversation_gets_a_new_empty_one(client):
     http, install = client
     fake = install(FakeChatwoot(contacts=[{"id": 2, "email": EMAIL}],
-                                conversations=[{"id": 12, "inbox_id": 99}]))
+                                conversations=[_conv(12, inbox=99)]))
     r = http.post(ROUTE, json=body(), headers=auth())
     assert r.status_code == 200 and r.json()["status"] == "created"
     assert ("create_conversation", 2, INBOX, EMAIL, "Refund Update: Order #1113621") in fake.calls
@@ -128,7 +151,7 @@ def test_a_conversation_that_is_not_that_customers_is_refused(client):
     http, install = client
     install(FakeChatwoot(
         contacts=[{"id": 2, "email": EMAIL}],
-        conversations=[{"id": 9, "inbox_id": INBOX}],
+        conversations=[_conv(9)],
         details={9: {"inbox_id": INBOX, "meta": {"sender": {"email": "someone.else@example.com"}}}}))
     r = http.post(ROUTE, json=body(), headers=auth())
     assert r.status_code == 409 and r.json()["status"] == "mismatch"
