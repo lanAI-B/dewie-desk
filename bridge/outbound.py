@@ -22,6 +22,8 @@ from typing import Annotated, Mapping
 import requests
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
+from chatwoot import ChatwootError
+from conversations import recipient_of
 from state import DedupStore, OutboundRecord
 
 TOKEN_ENV = "BRIDGE_OUTBOUND_TOKEN"
@@ -37,6 +39,10 @@ _KNOWN_DETAILS = frozenset({
     "accepted_without_message_id",
     "invalid_conversation_id",
     "empty_content",
+    # Set by the bridge itself before any post (nothing was sent).
+    "recipient_mismatch",
+    "recipient_unverified",
+    "claim_failed",
 })
 _HTTP_DETAIL = re.compile(r"http_[1-5][0-9]{2}")
 _REQUEST_ERRORS = frozenset(
@@ -52,7 +58,10 @@ log = logging.getLogger("dewie-desk-bridge.outbound")
 
 HTTP_STATUS = {"accepted": 200, "rejected": 502, "unknown": 504}
 
-Label = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+# Machine identifiers only (e.g. `discord:1349...`, `dewieops-refund-button`). Both
+# are stored and logged; free text here would undo the hash-only content design
+# with a customer name or card tail (review #11).
+Label = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}$")]
 
 
 class OutboundRequest(BaseModel):
@@ -61,6 +70,10 @@ class OutboundRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     conversation_id: int = Field(gt=0)
+    # Who this conversation must belong to. Re-checked against a fresh read of the
+    # conversation immediately before posting, so a contact merge or a stale link
+    # between resolve and send cannot redirect the message (review #2).
+    recipient_email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=254)
     content: str = Field(min_length=1, max_length=20000)
     idempotency_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:._\-]{0,199}$")
     actor: Label
@@ -164,29 +177,70 @@ class IdempotencyConflict(Exception):
     pass
 
 
-def deliver(store: DedupStore, client, request: OutboundRequest) -> tuple[int, dict]:
-    """Claim, send at most once, and durably record the outcome."""
-    verdict, record = store.begin_outbound(
-        request.idempotency_key,
-        request.conversation_id,
-        content_digest(request.content),
-        request.actor,
-        request.source,
-    )
+def _claim_failed(request: OutboundRequest) -> tuple[int, dict]:
+    """Nothing was claimed or sent. Say so in the shape the consumer trusts (review #4).
+
+    A bare 500 here was read by DewieOps as `unknown` and froze a key that the
+    bridge had never recorded.
+    """
+    return HTTP_STATUS["rejected"], {
+        "status": "rejected",
+        "idempotency_key": request.idempotency_key,
+        "conversation_id": request.conversation_id,
+        "chatwoot_message_id": None,
+        "http_status": None,
+        "detail": "claim_failed",
+        "attempts": 0,
+        "replayed": False,
+        "retry_safe": True,
+    }
+
+
+def _recipient_problem(client, request: OutboundRequest, inbox_id: int) -> str | None:
+    try:
+        details = client.conversation_details(request.conversation_id)
+    except (ChatwootError, KeyError, TypeError, ValueError):
+        return "recipient_unverified"
+    found = recipient_of(details, inbox_id)
+    if found is None or found.casefold() != request.recipient_email.strip().casefold():
+        return "recipient_mismatch"
+    return None
+
+
+def deliver(store: DedupStore, client, request: OutboundRequest,
+            inbox_id: int) -> tuple[int, dict]:
+    """Claim, verify the recipient, send at most once, and durably record the outcome."""
+    try:
+        verdict, record = store.begin_outbound(
+            request.idempotency_key,
+            request.conversation_id,
+            content_digest(request.content),
+            request.actor,
+            request.source,
+        )
+    except Exception as exc:
+        log.error("outbound claim failed key=%s error=%s", request.idempotency_key,
+                  type(exc).__name__)
+        return _claim_failed(request)
     if verdict == "conflict":
         raise IdempotencyConflict("idempotency_key_reused_for_different_message")
     if verdict == "replay":
         return _response(record, replayed=True)
 
-    # Claim failures above propagate: nothing has been sent, so they are not
-    # ambiguous. From here on Chatwoot may have been called.
-    try:
-        result = client.post_public_outgoing(request.conversation_id, request.content)
-        outcome, message_id = result.outcome, result.message_id
-        http_status, detail = result.status_code, _safe_detail(result.detail)
-    except Exception as exc:
-        outcome, message_id, http_status = "unknown", None, None
-        detail = f"transport_error:{type(exc).__name__}"
+    # A fresh claim. Re-read the conversation now, not at resolve time: a refusal
+    # here is definitive (nothing was posted), so it is recorded as rejected.
+    problem = _recipient_problem(client, request, inbox_id)
+    if problem is not None:
+        outcome, message_id, http_status, detail = "rejected", None, None, problem
+    else:
+        # From here on Chatwoot may have been called.
+        try:
+            result = client.post_public_outgoing(request.conversation_id, request.content)
+            outcome, message_id = result.outcome, result.message_id
+            http_status, detail = result.status_code, _safe_detail(result.detail)
+        except Exception as exc:
+            outcome, message_id, http_status = "unknown", None, None
+            detail = f"transport_error:{type(exc).__name__}"
     try:
         record = store.finish_outbound(
             request.idempotency_key,

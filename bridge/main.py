@@ -350,9 +350,13 @@ async def chatwoot_outbound_message(request: Request) -> JSONResponse:
         _increment("outbound_invalid_request")
         raise HTTPException(status_code=422, detail=str(exc))
 
+    inbox_id = conversations.configured_inbox()
+    if inbox_id is None:
+        # The recipient check needs to know which email inbox is legitimate.
+        raise HTTPException(status_code=503, detail="outbound_inbox_not_configured")
     try:
         status_code, result = await run_in_threadpool(
-            outbound.deliver, dedup_store(), chatwoot_client(), parsed
+            outbound.deliver, dedup_store(), chatwoot_client(), parsed, inbox_id
         )
     except outbound.IdempotencyConflict as exc:
         _increment("outbound_idempotency_conflict")

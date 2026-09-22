@@ -30,6 +30,9 @@ def no_live_chatwoot(monkeypatch):
     """
     for name in LIVE_SECRETS:
         monkeypatch.delenv(name, raising=False)
+    # The outbound recipient check needs the legitimate email inbox; tests that
+    # exercise the unconfigured case delete it.
+    monkeypatch.setenv("BRIDGE_OUTBOUND_INBOX_ID", "1")
     attempts = []
 
     def refuse(adapter, request, *args, **kwargs):

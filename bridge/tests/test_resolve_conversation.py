@@ -69,7 +69,7 @@ class FakeChatwoot:
     def conversation_details(self, conversation_id):
         self._call("conversation_details", conversation_id)
         return self.details.get(conversation_id,
-                                {"inbox_id": INBOX, "meta": {"sender": {"email": EMAIL}}})
+                                {"inbox_id": INBOX, "meta": {"channel": "Channel::Email", "sender": {"email": EMAIL}}})
 
     def post_public_outgoing(self, *a, **k):
         raise AssertionError("resolving a conversation must never post a message")
@@ -152,7 +152,8 @@ def test_a_conversation_that_is_not_that_customers_is_refused(client):
     install(FakeChatwoot(
         contacts=[{"id": 2, "email": EMAIL}],
         conversations=[_conv(9)],
-        details={9: {"inbox_id": INBOX, "meta": {"sender": {"email": "someone.else@example.com"}}}}))
+        details={9: {"inbox_id": INBOX, "meta": {"channel": "Channel::Email",
+                                                  "sender": {"email": "someone.else@example.com"}}}}))
     r = http.post(ROUTE, json=body(), headers=auth())
     assert r.status_code == 409 and r.json()["status"] == "mismatch"
 
@@ -249,3 +250,34 @@ def test_real_client_error_carries_no_response_text(monkeypatch):
     with pytest.raises(ChatwootError) as exc:
         ChatwootClient("http://cw", "2", "t").conversation_details(9)
     assert str(exc.value) == "http_422"
+
+
+def test_a_non_email_inbox_conversation_is_refused(client):
+    """Review #5: a widget/API inbox would accept the message and email nobody."""
+    http, install = client
+    install(FakeChatwoot(
+        contacts=[{"id": 2, "email": EMAIL}], conversations=[_conv(9)],
+        details={9: {"inbox_id": INBOX, "meta": {"channel": "Channel::Api", "sender": {"email": EMAIL}}}}))
+    r = http.post(ROUTE, json=body(), headers=auth())
+    assert r.status_code == 409 and r.json()["status"] == "mismatch"
+
+
+def test_the_email_returned_is_the_one_chatwoot_holds(client):
+    """Review #7: echoing the caller's own input would make the consumer's check a no-op."""
+    http, install = client
+    install(FakeChatwoot(
+        contacts=[{"id": 2, "email": EMAIL}], conversations=[_conv(9)],
+        details={9: {"inbox_id": INBOX, "meta": {"channel": "Channel::Email",
+                                                  "sender": {"email": "Ann.Example@Example.COM"}}}}))
+    assert http.post(ROUTE, json=body(), headers=auth()).json()["contact_email"] == "Ann.Example@Example.COM"
+
+
+def test_real_client_reads_every_page_of_contacts(monkeypatch):
+    rec = Recorder([
+        (200, {"payload": [{"id": 2, "email": EMAIL}], "meta": {"has_more": True}}),
+        (200, {"payload": [{"id": 3, "email": EMAIL}], "meta": {"has_more": False}}),
+    ])
+    monkeypatch.setattr(chatwoot.requests, "request", rec)
+    found = ChatwootClient("http://cw", "2", "t").find_contacts_by_email(EMAIL)
+    assert [c["id"] for c in found] == [2, 3], "a duplicate on page 2 must still be seen"
+    assert [p["page"] for _, _, _, p in rec.calls] == [1, 2]

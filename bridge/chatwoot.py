@@ -174,10 +174,17 @@ class ChatwootClient:
 
     def find_contacts_by_email(self, email: str) -> list[dict]:
         """Contacts whose email equals ``email`` exactly (case-insensitive)."""
-        payload = self._json("GET", "/contacts/search", params={"q": email}).get("payload") or []
         wanted = email.strip().casefold()
-        return [c for c in payload
-                if isinstance(c, dict) and str(c.get("email") or "").strip().casefold() == wanted]
+        matches: list[dict] = []
+        # Every page: the duplicate-contact gate is only meaningful over all of them.
+        for page in range(1, 51):
+            data = self._json("GET", "/contacts/search", params={"q": email, "page": page})
+            payload = data.get("payload") or []
+            matches += [c for c in payload if isinstance(c, dict)
+                        and str(c.get("email") or "").strip().casefold() == wanted]
+            if not payload or not (data.get("meta") or {}).get("has_more"):
+                return matches
+        raise ChatwootError("contact_search_too_many_pages")
 
     def contact_conversations(self, contact_id: int) -> list[dict]:
         payload = self._json("GET", f"/contacts/{int(contact_id)}/conversations").get("payload") or []

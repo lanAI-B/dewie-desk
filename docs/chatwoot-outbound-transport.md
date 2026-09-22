@@ -34,6 +34,7 @@ Content-Type: application/json
 
 {
   "conversation_id": 45,
+  "recipient_email": "ann@example.com",
   "content": "Your refund of $12.00 was issued today.",
   "idempotency_key": "refund:123",
   "actor": "lana",
@@ -44,13 +45,15 @@ Content-Type: application/json
 | Field | Rule |
 | --- | --- |
 | `conversation_id` | JSON integer > 0; an existing conversation in the configured account. No addressing by email. |
-| `content` | Final rendered text, 1–20000 characters, not blank. Sent byte-for-byte. |
+| `recipient_email` | Who the conversation must belong to. Immediately before posting, the bridge re-reads the conversation and refuses (`rejected`, `recipient_mismatch`) unless it is on `BRIDGE_OUTBOUND_INBOX_ID`, that inbox is an email channel, and its contact's email is this one (case-insensitive). A contact merge or stale link between resolve and send therefore cannot redirect the message. If the conversation cannot be read, the answer is `rejected`, `recipient_unverified`. Nothing is posted in either case. |
+| `content` | Final rendered text, 1–20000 characters, not blank. Sent to Chatwoot byte-for-byte. Chatwoot renders message content as Markdown when it builds the email, so single newlines may collapse and `_`, `*`, `#` are interpreted; separate paragraphs with blank lines. |
 | `idempotency_key` | 1–200 of `A-Z a-z 0-9 : . _ -`, starting alphanumeric. Derive it from the business event, e.g. `refund:<id>`, and reuse it on every retry. |
-| `actor` | Who initiated the send (person or service), 1–200 characters. |
-| `source` | Which system/feature sent it, 1–200 characters. |
+| `actor` | Who initiated the send, as a machine id: `^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}$` (e.g. `discord:1349…`). Stored and logged, so free text such as a name is refused. |
+| `source` | Which system/feature sent it, same pattern (e.g. `dewieops-refund-button`). |
 
 Errors before any claim or Chatwoot call: `401` (missing/wrong bearer),
-`503` (outbound disabled/misconfigured), `400` (not JSON), `422` (contract
+`503` (outbound disabled/misconfigured, including `outbound_inbox_not_configured`
+until `BRIDGE_OUTBOUND_INBOX_ID` is set), `400` (not JSON), `422` (contract
 violation, including extra fields such as `private`).
 
 `409 idempotency_key_reused_for_different_message`: the key already belongs to a
@@ -112,8 +115,11 @@ an unexpected client failure), `outcome_not_recorded`, and
 
 The claim uses a SQLite `BEGIN IMMEDIATE` transaction, so concurrent duplicate
 requests (threads or processes sharing the file) produce one attempt. A failure
-while claiming happens before any send and surfaces as an ordinary `500`; it is
-not an ambiguous outcome. If the bridge dies between the Chatwoot call and
+while claiming happens before any send and nothing is recorded; it answers
+`502` with the normal body, `status: rejected`, `detail: claim_failed`,
+`attempts: 0`, `retry_safe: true` and the request's key and conversation echoed,
+so a consumer reads it as a definitive "nothing sent" rather than an ambiguous
+outcome. If the bridge dies between the Chatwoot call and
 recording its outcome, the row stays `pending`, which replays as `unknown`. If
 the outcome cannot be written after Chatwoot answered, that request gets a
 `504 unknown` with `detail: outcome_not_recorded` and `retry_safe: false`; the

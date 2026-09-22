@@ -151,3 +151,26 @@ def test_outbound_finish_only_moves_pending_records(tmp_path):
         store.finish_outbound("refund:124", "pending")
     assert store.get_outbound("refund:123").status == "accepted"
     assert store.get_outbound("refund:124").status == "pending"
+
+
+def test_connections_are_closed_not_just_committed(tmp_path, monkeypatch):
+    """Review #16: `with sqlite3.connect()` commits but never closes."""
+    import sqlite3 as real_sqlite
+    import state
+
+    opened = []
+    real_connect = real_sqlite.connect
+
+    def tracking_connect(*a, **k):
+        conn = real_connect(*a, **k)
+        opened.append(conn)
+        return conn
+
+    store = state.DedupStore(tmp_path / "s.sqlite3")
+    monkeypatch.setattr(state.sqlite3, "connect", tracking_connect)
+    store.get_outbound("refund:1")
+    store.claim("some-key")
+    assert opened
+    for conn in opened:
+        with pytest.raises(real_sqlite.ProgrammingError):
+            conn.execute("SELECT 1")
