@@ -43,6 +43,10 @@ class OutboundResult:
     detail: str = ""
 
 
+class ChatwootError(Exception):
+    """A Chatwoot call failed. The message is a bounded code, never response text."""
+
+
 def _connection_refused(exc: requests.RequestException) -> bool:
     reason = getattr(exc.args[0], "reason", None) if exc.args else None
     return isinstance(reason, NewConnectionError)
@@ -150,6 +154,73 @@ class ChatwootClient:
         if isinstance(message_id, bool) or not isinstance(message_id, int):
             return OutboundResult("unknown", status, detail="accepted_without_message_id")
         return OutboundResult("accepted", status, message_id, "created")
+
+    # ── Conversation lookup/creation for internal senders ────────────────────
+    # Read and create only; none of these posts a message. Errors raise
+    # ChatwootError carrying a bounded code, never a response body.
+
+    def _json(self, method: str, path: str, **kwargs):
+        try:
+            response = requests.request(method, self._url(path), headers=self._headers,
+                                        timeout=self.timeout, **kwargs)
+        except requests.RequestException as exc:
+            raise ChatwootError(f"request_error:{type(exc).__name__}") from None
+        if response.status_code // 100 != 2:
+            raise ChatwootError(f"http_{response.status_code}")
+        try:
+            return response.json()
+        except ValueError:
+            raise ChatwootError("invalid_json") from None
+
+    def find_contacts_by_email(self, email: str) -> list[dict]:
+        """Contacts whose email equals ``email`` exactly (case-insensitive)."""
+        payload = self._json("GET", "/contacts/search", params={"q": email}).get("payload") or []
+        wanted = email.strip().casefold()
+        return [c for c in payload
+                if isinstance(c, dict) and str(c.get("email") or "").strip().casefold() == wanted]
+
+    def contact_conversations(self, contact_id: int) -> list[dict]:
+        payload = self._json("GET", f"/contacts/{int(contact_id)}/conversations").get("payload") or []
+        return [c for c in payload if isinstance(c, dict)]
+
+    def conversation_details(self, conversation_id: int) -> dict:
+        return self._json("GET", f"/conversations/{int(conversation_id)}")
+
+    def create_contact(self, inbox_id: int, email: str, name: str | None) -> dict:
+        body = {"inbox_id": int(inbox_id), "email": email}
+        if name:
+            body["name"] = name
+        data = self._json("POST", "/contacts", json=body)
+        return (data.get("payload") or {}).get("contact") or data.get("payload") or data
+
+    def contact_source_id(self, contact_id: int, inbox_id: int, email: str) -> str:
+        """The contact's source id on this inbox, creating the contact-inbox link if absent."""
+        contact = self._json("GET", f"/contacts/{int(contact_id)}").get("payload") or {}
+        for link in contact.get("contact_inboxes") or []:
+            inbox = link.get("inbox") or {}
+            if inbox.get("id") == int(inbox_id) and link.get("source_id"):
+                return str(link["source_id"])
+        created = self._json("POST", f"/contacts/{int(contact_id)}/contact_inboxes",
+                             json={"inbox_id": int(inbox_id), "source_id": email})
+        source_id = created.get("source_id") or (created.get("payload") or {}).get("source_id")
+        if not source_id:
+            raise ChatwootError("contact_inbox_without_source_id")
+        return str(source_id)
+
+    def create_conversation(self, contact_id: int, inbox_id: int, source_id: str,
+                            subject: str) -> int:
+        """Open an empty conversation. No message is posted, so nothing is emailed."""
+        data = self._json("POST", "/conversations", json={
+            "source_id": source_id,
+            "inbox_id": int(inbox_id),
+            "contact_id": int(contact_id),
+            "status": "open",
+            "additional_attributes": {"mail_subject": subject},
+        })
+        conversation_id = data.get("id")
+        if isinstance(conversation_id, bool) or not isinstance(conversation_id, int):
+            raise ChatwootError("created_without_conversation_id")
+        return conversation_id
 
     def get_conversation(self, conversation_id: int) -> ConversationResult:
         """Fetch the current message page and metadata for one conversation."""

@@ -30,6 +30,7 @@ from parser import (
     parse_message_created,
 )
 from state import DedupStore
+import conversations
 import outbound
 import webhook_auth
 
@@ -371,6 +372,36 @@ async def chatwoot_outbound_message(request: Request) -> JSONResponse:
         parsed.actor,
         parsed.source,
     )
+    return JSONResponse(status_code=status_code, content=result)
+
+
+@app.post("/internal/chatwoot/resolve-conversation")
+async def chatwoot_resolve_conversation(request: Request) -> JSONResponse:
+    """Find the customer's conversation in the email inbox, or open an empty one."""
+    verdict = outbound.authorize(request.headers)
+    if not verdict.ok:
+        _increment("resolve_auth_rejected")
+        raise HTTPException(status_code=verdict.status_code, detail=verdict.reason)
+    inbox_id = conversations.configured_inbox()
+    if inbox_id is None:
+        raise HTTPException(status_code=503, detail="outbound_inbox_not_configured")
+    try:
+        payload = json.loads(await request.body())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="invalid_json")
+    try:
+        parsed = conversations.parse_request(payload)
+    except ValueError as exc:
+        _increment("resolve_invalid_request")
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    status_code, result = await run_in_threadpool(
+        conversations.resolve, chatwoot_client(), parsed, inbox_id)
+    _increment(f"resolve_{result['status']}")
+    # No email in the log: the conversation and contact ids identify it.
+    log.info("resolve status=%s conversation=%s contact=%s inbox=%s actor=%s source=%s",
+             result["status"], result.get("conversation_id"), result.get("contact_id"),
+             inbox_id, parsed.actor, parsed.source)
     return JSONResponse(status_code=status_code, content=result)
 
 

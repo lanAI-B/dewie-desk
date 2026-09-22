@@ -250,6 +250,23 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
 - Blocker or decision needed: none for this slice. Separately, the PM may want
   the DewieOps-driven `test_main.py` baseline failure fixed on the base branch.
 
+### PM scope change: find-or-create conversation (Lana, 2026-09-22)
+
+- Decision: "nobody is gonna look for conversation id". The refund notice must
+  find the customer's conversation itself, or create one. This relaxes the
+  original exclusion "the endpoint requires an existing conversation" for
+  conversation *creation* only; messages still go only to a conversation that
+  the bridge has verified belongs to the customer's email.
+- Implemented locally: `bridge/conversations.py`, `POST
+  /internal/chatwoot/resolve-conversation`, and read/create-only client methods
+  in `bridge/chatwoot.py` (`ChatwootError` carries bounded codes only).
+  Contract section added to `docs/chatwoot-outbound-transport.md`.
+- Tests: `bridge/tests/test_resolve_conversation.py`. Full bridge suite: 125
+  passed, 1 failed; the failure is the same unrelated sibling-DewieOps
+  `test_main.py` baseline.
+- QA config: `BRIDGE_OUTBOUND_INBOX_ID=1` (the "Glitch" email inbox) in the
+  gitignored bridge `.env`.
+
 ## PM review
 
 - Result: changes requested on `e21227b`; architecture accepted, one safety

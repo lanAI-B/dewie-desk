@@ -128,3 +128,31 @@ content) at error level for reconciliation.
 2. There is no automated resolution in this slice. Recording a human
    reconciliation (marking a key accepted or releasing it) is future work for
    the refund-consumer slice to decide.
+
+## Finding the conversation (added 2026-09-22)
+
+Nobody on the team should look up a conversation id. Callers resolve it first:
+
+```http
+POST /internal/chatwoot/resolve-conversation
+Authorization: Bearer <BRIDGE_OUTBOUND_TOKEN>
+
+{"email": "ann@example.com", "subject": "Refund Update: Order #1113621",
+ "name": "Ann Example", "actor": "discord:1", "source": "dewieops-refund-button"}
+```
+
+- Returns the contact's most recently active conversation in the email inbox
+  named by `BRIDGE_OUTBOUND_INBOX_ID` (`status: found`). If there is none, it
+  creates the contact and/or an **empty** conversation with that mail subject
+  (`status: created`). Creating a conversation posts no message, so nothing is
+  emailed; the customer-visible message still goes only through
+  `/internal/chatwoot/outbound-message`.
+- Every returned conversation is re-read and must belong to exactly that email
+  on exactly that inbox, or the answer is `409 mismatch`. Two contacts with the
+  same email give `409 ambiguous_contact`.
+- `200` found/created, `409` mismatch/ambiguous, `422` bad request, `502` a
+  Chatwoot failure (`detail` is a bounded code such as `http_500`), `503` until
+  both the outbound token and `BRIDGE_OUTBOUND_INBOX_ID` are set.
+- Logs carry conversation/contact ids, never the email.
+- Two simultaneous resolves for a brand-new customer can open two empty
+  conversations; harmless, since only the one the caller links gets a message.
