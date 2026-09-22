@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 import threading
 import json
 from dataclasses import asdict, dataclass
@@ -95,8 +96,18 @@ class DedupStore:
                 )"""
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=10)
+    @contextmanager
+    def _connect(self):
+        """Commit on success, roll back on error, and always close.
+
+        `with sqlite3.connect(...)` alone commits but never closes (review #16).
+        """
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _transaction(self) -> sqlite3.Connection:
         """Open a connection holding SQLite's write lock until commit/rollback."""

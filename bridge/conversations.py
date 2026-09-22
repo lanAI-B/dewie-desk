@@ -70,10 +70,26 @@ def _subject(conversation: dict) -> str:
     return " ".join(str((conversation.get("additional_attributes") or {}).get("mail_subject") or "").split())
 
 
+EMAIL_CHANNEL = "Channel::Email"
+
+
+def recipient_of(details: dict, inbox_id: int) -> str | None:
+    """The address Chatwoot will email for this conversation, or None if it will not.
+
+    None unless the conversation is on the configured inbox AND that inbox is an
+    email channel: a widget/API inbox would accept the message and email nobody
+    (review #5).
+    """
+    meta = details.get("meta") or {}
+    if details.get("inbox_id") != inbox_id or meta.get("channel") != EMAIL_CHANNEL:
+        return None
+    email = str((meta.get("sender") or {}).get("email") or "").strip()
+    return email or None
+
+
 def _belongs(details: dict, email: str, inbox_id: int) -> bool:
-    sender = ((details.get("meta") or {}).get("sender") or {})
-    return (details.get("inbox_id") == inbox_id
-            and str(sender.get("email") or "").strip().casefold() == email.strip().casefold())
+    found = recipient_of(details, inbox_id)
+    return found is not None and found.casefold() == email.strip().casefold()
 
 
 def resolve(client, request: ResolveRequest, inbox_id: int) -> tuple[int, dict]:
@@ -103,12 +119,15 @@ def resolve(client, request: ResolveRequest, inbox_id: int) -> tuple[int, dict]:
             conversation_id = client.create_conversation(
                 contact_id, inbox_id, source_id, request.subject)
 
-        if not _belongs(client.conversation_details(conversation_id), email, inbox_id):
+        details = client.conversation_details(conversation_id)
+        if not _belongs(details, email, inbox_id):
             return 409, {"status": "mismatch", "conversation_id": conversation_id, **base}
+        # Report the address Chatwoot holds, not the caller's input (review #7).
+        confirmed = recipient_of(details, inbox_id)
     except ChatwootError as exc:
         return 502, {"status": "error", "detail": str(exc)[:80], **base}
     except (KeyError, TypeError, ValueError):
         return 502, {"status": "error", "detail": "unexpected_chatwoot_shape", **base}
 
     return 200, {"status": status, "conversation_id": conversation_id,
-                 "contact_id": contact_id, "contact_email": email, **base}
+                 "contact_id": contact_id, "contact_email": confirmed, **base}

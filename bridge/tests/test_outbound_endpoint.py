@@ -10,11 +10,17 @@ from state import DedupStore
 
 ROUTE = "/internal/chatwoot/outbound-message"
 TOKEN = "t" * 40
+RECIPIENT = "ann.example@example.com"
+
+
+def email_conversation(email=RECIPIENT, inbox_id=1, channel="Channel::Email"):
+    return {"inbox_id": inbox_id, "meta": {"channel": channel, "sender": {"email": email}}}
 
 
 def body(**updates):
     value = {
         "conversation_id": 45,
+        "recipient_email": RECIPIENT,
         "content": "Your refund of $12.00 was issued.",
         "idempotency_key": "refund:123",
         "actor": "lana",
@@ -44,6 +50,12 @@ class FakeChatwoot:
 
     def post_private_note(self, *args, **kwargs):
         raise AssertionError("outbound transport must never post a private note")
+
+    details = None
+
+    def conversation_details(self, conversation_id):
+        self.reads = getattr(self, "reads", 0) + 1
+        return self.details if self.details is not None else email_conversation()
 
 
 class ForbiddenStore:
@@ -388,7 +400,14 @@ def test_claim_failure_before_the_call_is_not_reported_as_ambiguous(wired, monke
         ROUTE, json=body(), headers=auth()
     )
 
-    assert response.status_code == 500
+    # Review #4: a bare 500 was read by DewieOps as `unknown` and froze a key the
+    # bridge never recorded. The answer is now a structured, trusted rejection.
+    assert response.status_code == 502
+    assert response.json() == {
+        "status": "rejected", "idempotency_key": "refund:123", "conversation_id": 45,
+        "chatwoot_message_id": None, "http_status": None, "detail": "claim_failed",
+        "attempts": 0, "replayed": False, "retry_safe": True,
+    }
     assert fake.calls == []
     assert store.get_outbound("refund:123") is None
 
@@ -417,6 +436,9 @@ def test_rejection_body_echoing_content_is_not_persisted(wired, monkeypatch):
     monkeypatch.setattr(
         main, "chatwoot_client", lambda: chatwoot.ChatwootClient("http://desk", "1", "token")
     )
+    monkeypatch.setattr(
+        chatwoot.ChatwootClient, "conversation_details", lambda self, cid: email_conversation()
+    )
 
     response = TestClient(main.app).post(ROUTE, json=body(content=content), headers=auth())
 
@@ -444,6 +466,9 @@ def test_exception_message_echoing_content_is_not_persisted(wired, monkeypatch):
     monkeypatch.setattr("chatwoot.requests.post", post)
     monkeypatch.setattr(
         main, "chatwoot_client", lambda: chatwoot.ChatwootClient("http://desk", "1", "token")
+    )
+    monkeypatch.setattr(
+        chatwoot.ChatwootClient, "conversation_details", lambda self, cid: email_conversation()
     )
 
     response = TestClient(main.app).post(ROUTE, json=body(content=content), headers=auth())
@@ -551,3 +576,78 @@ def test_every_detail_the_real_client_emits_is_allowlisted(monkeypatch):
     assert [outbound._safe_detail(value) for value in emitted] == emitted
     assert {"created", "accepted_without_message_id", "http_422", "http_503",
             "request_error:ReadTimeout", "request_error:ConnectionRefused"} <= set(emitted)
+
+
+# ── review 2026-09-22: the send is bound to its recipient ────────────────────
+
+@pytest.mark.parametrize("details,detail", [
+    (email_conversation(email="someone.else@example.com"), "recipient_mismatch"),   # contact merged away
+    (email_conversation(inbox_id=7), "recipient_mismatch"),                          # another inbox
+    (email_conversation(channel="Channel::WebWidget"), "recipient_mismatch"),        # would email nobody
+    ({"inbox_id": 1, "meta": {}}, "recipient_mismatch"),
+])
+def test_a_conversation_that_no_longer_belongs_to_the_recipient_is_never_posted(wired, details, detail):
+    store, install = wired
+    fake = install(accepted())
+    fake.details = details
+    r = TestClient(main.app).post(ROUTE, json=body(), headers=auth())
+    assert r.status_code == 502
+    assert (r.json()["status"], r.json()["detail"], r.json()["retry_safe"]) == ("rejected", detail, True)
+    assert fake.calls == [], "nothing may be posted to a conversation that is not the recipient's"
+    assert store.get_outbound("refund:123").status == "rejected"
+
+
+def test_an_unreadable_conversation_is_rejected_without_posting(wired):
+    from chatwoot import ChatwootError
+
+    store, install = wired
+
+    class Unreadable(FakeChatwoot):
+        def conversation_details(self, conversation_id):
+            raise ChatwootError("http_500")
+
+    fake = install(accepted(), cls=Unreadable)
+    r = TestClient(main.app).post(ROUTE, json=body(), headers=auth())
+    assert (r.json()["status"], r.json()["detail"]) == ("rejected", "recipient_unverified")
+    assert fake.calls == []
+
+
+def test_recipient_email_is_compared_case_insensitively(wired):
+    _, install = wired
+    fake = install(accepted())
+    fake.details = email_conversation(email="Ann.Example@Example.com")
+    assert TestClient(main.app).post(ROUTE, json=body(), headers=auth()).json()["status"] == "accepted"
+
+
+def test_a_replay_is_answered_from_the_record_without_rereading(wired):
+    _, install = wired
+    fake = install(accepted())
+    client = TestClient(main.app)
+    client.post(ROUTE, json=body(), headers=auth())
+    fake.details = email_conversation(email="merged.elsewhere@example.com")
+    again = client.post(ROUTE, json=body(), headers=auth()).json()
+    assert (again["status"], again["replayed"]) == ("accepted", True)
+    assert fake.reads == 1 and len(fake.calls) == 1
+
+
+@pytest.mark.parametrize("bad", [
+    {"recipient_email": None}, {"recipient_email": "not-an-email"},
+    {"actor": "Ann Example"}, {"actor": "card 4111 1111 1111 1111"}, {"source": "refund for Ann"},
+])
+def test_recipient_is_required_and_labels_are_machine_ids(wired, bad):
+    _, install = wired
+    fake = install(accepted())
+    payload = body(**bad)
+    if bad.get("recipient_email", "") is None:
+        payload.pop("recipient_email")
+    assert TestClient(main.app).post(ROUTE, json=payload, headers=auth()).status_code == 422
+    assert fake.calls == []
+
+
+def test_outbound_is_disabled_until_the_email_inbox_is_configured(wired, monkeypatch):
+    store, install = wired
+    fake = install(accepted())
+    monkeypatch.delenv("BRIDGE_OUTBOUND_INBOX_ID")
+    r = TestClient(main.app).post(ROUTE, json=body(), headers=auth())
+    assert r.status_code == 503 and r.json()["detail"] == "outbound_inbox_not_configured"
+    assert fake.calls == [] and store.get_outbound("refund:123") is None
