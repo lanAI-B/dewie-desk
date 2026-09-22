@@ -1,6 +1,6 @@
 # Feature: safe Chatwoot outbound system-email transport
 
-Status: PM accepted (local implementation complete; not pushed or deployed)
+Status: merged to master `a55fcb7` (2026-09-22, Lana); QA passed with the DewieOps refund notice
 Tracking: this plan only; source queue task #6176 was closed as transferred after
 initial plan commit `48ccbe4`
 
@@ -249,6 +249,20 @@ git -C C:\Users\Owner\source\repos\dewie-desk-chatwoot-outbound diff --check
   remains later, after that consumer is implemented and PM-accepted.
 - Blocker or decision needed: none for this slice. Separately, the PM may want
   the DewieOps-driven `test_main.py` baseline failure fixed on the base branch.
+
+### Merge (2026-09-22, Lana)
+
+- Thread per notice (`bce58e0`, Lana: "so much cleaner not being tangled with
+  some email thread which could be unrelated"): resolve reuses only a
+  conversation with the caller's exact mail subject, otherwise it creates one.
+- `origin/master` was merged into the branch (`a55fcb7`, clean) and `master` was
+  fast-forwarded `9a8e626..a55fcb7`. The stale `test_main` expectation now
+  matches DewieOps' `system_sender_localpart` (DewieOps `11d4fd5`, merged to
+  DewieOps `main` at `75da9c9` alongside this). Bridge suite: 128 passed, 0 failed.
+- QA on the home box: bridge on port 8624 with `BRIDGE_OUTBOUND_INBOX_ID=1` (the
+  Glitch email inbox). Accepted sends: #9 message 42 and #10 message 43.
+- Production: needs the bridge on the prod box behind Cloudflare with its own
+  `BRIDGE_OUTBOUND_TOKEN` and the real support inbox id.
 
 ### PM scope change: find-or-create conversation (Lana, 2026-09-22)
 
