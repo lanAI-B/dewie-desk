@@ -16,6 +16,10 @@ Two invariants, both safety-critical:
   through the public path would re-email every customer.
 * The mailbox is opened read-only and fetched with ``mark_seen=False``. This
   runs against a mailbox humans are working in.
+* A message carrying ``X-Dewie-Desk-Copy`` is skipped. The bridge appends that
+  header to its Sent-folder copy of a reply that was sent FROM Chatwoot
+  (feature/desk-sent-copy); posting it back would duplicate a message
+  Chatwoot already shows, as a note, on every such reply.
 """
 
 from __future__ import annotations
@@ -35,6 +39,9 @@ from state import message_id_key, participant_subject_key
 log = logging.getLogger("dewie-desk-bridge.sent-sync")
 
 NOTE_BODY_LIMIT = 4000
+# Set by the bridge on copies of Chatwoot-sent replies it files in Sent. The
+# value is the Chatwoot message id; its presence alone means "already in Chatwoot".
+DESK_COPY_HEADER = "X-Dewie-Desk-Copy"
 _QUOTE_MARKERS = (
     re.compile(r"^\s*-+\s*original message\s*-+\s*$", re.IGNORECASE),
     re.compile(r"^\s*on .{5,200}\bwrote:\s*$", re.IGNORECASE),
@@ -57,6 +64,7 @@ class SentReply:
     sent_at: datetime | None = None
     body: str = ""
     uid: str = ""
+    desk_copy: str = ""  # X-Dewie-Desk-Copy value: this mail came FROM Chatwoot
 
 
 @dataclass
@@ -160,6 +168,7 @@ def parse_sent_email(raw: bytes, uid: str = "") -> SentReply:
         sent_at=sent_at,
         body=_body_text(message),
         uid=str(uid or ""),
+        desk_copy=str(message.get(DESK_COPY_HEADER) or "").strip(),
     )
 
 
@@ -179,6 +188,7 @@ def from_mail_message(message) -> SentReply:
         sent_at=getattr(message, "date", None),
         body=str(getattr(message, "text", "") or ""),
         uid=str(getattr(message, "uid", "") or ""),
+        desk_copy=str((headers.get(DESK_COPY_HEADER.lower()) or ("",))[0] or "").strip(),
     )
 
 
@@ -263,6 +273,10 @@ def sync_replies(
     report = report or SyncReport()
     for reply in replies:
         report.bump("sent_seen")
+        if reply.desk_copy:
+            # Loop guard: the bridge filed this copy of a Chatwoot-sent reply.
+            report.bump("desk_copy_skipped")
+            continue
         claim_key = note_claim_key(reply)
         if not claim_key:
             report.bump("unidentifiable")
