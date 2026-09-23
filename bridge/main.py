@@ -60,6 +60,11 @@ def dry_run() -> bool:
     return _enabled("BRIDGE_DRY_RUN", True)
 
 
+def order_capture_enabled() -> bool:
+    """Capture ORDER/PG messages as order packets (DewieOps Cloud SQL). Off by default."""
+    return _enabled("BRIDGE_ORDER_CAPTURE", False)
+
+
 def _increment(name: str) -> None:
     with _metrics_lock:
         _metrics[name] += 1
@@ -184,6 +189,89 @@ def _private_note(result, decision) -> str:
     )
 
 
+def _capture_order(message: ParsedMessage, decision, attachment_text: str):
+    """Capture an actionable order as a DewieOps order packet, or return None.
+
+    None means "draft a reply instead": the lane is not an order lane, the message is
+    an order question with nothing to place, or capture failed. Failing open to a draft
+    matches the IMAP runner; an order can be answered late but is never dropped.
+    """
+    from dewie_brain.order_capture import ORDER_CATEGORIES, CaptureRequest, capture_order
+
+    if decision.category not in ORDER_CATEGORIES:
+        return None
+    _increment("order_capture_calls")
+    try:
+        result = capture_order(CaptureRequest(
+            category=decision.category,
+            from_email=message.from_email,
+            subject=message.subject,
+            body=message.body,
+            account_id=int(message.account_id or chatwoot_client().account_id or 0),
+            conversation_id=int(message.conversation_id or 0),
+            message_id=int(message.message_id or 0),
+            image_text=attachment_text or "",
+        ))
+    except Exception as exc:
+        _increment("order_capture_failed")
+        log.error(
+            "order capture failed conversation=%s message=%s error=%s",
+            message.conversation_id,
+            message.message_id,
+            type(exc).__name__,
+        )
+        return None
+    if result is None:
+        _increment("order_capture_not_an_order")
+        return None
+    _increment("order_packets_stored" if result.created else "order_packets_replayed")
+    # No customer data in the log: the packet id and the Chatwoot ids identify it.
+    log.info(
+        "order captured packet=%s created=%s type=%s conversation=%s message=%s",
+        result.packet_id,
+        result.created,
+        result.order_type,
+        message.conversation_id,
+        message.message_id,
+    )
+    return result
+
+
+def _capture_note(result) -> str:
+    lines = [
+        f"**Dewie order capture** (private; packet #{result.packet_id}, "
+        f"{result.order_type}, store {result.store or 'unknown'})",
+        "",
+        "Captured for attended order processing. Nothing has been placed and no reply "
+        "was drafted; the reply goes out once the order is processed.",
+    ]
+    if result.open_questions:
+        lines += ["", "Open questions:"] + [f"- {q}" for q in result.open_questions]
+    return "\n".join(lines)
+
+
+def _report_capture(message: ParsedMessage, result) -> bool:
+    """Post the capture as a private note; true consumes the draft command."""
+    if dry_run():
+        _increment("notes_avoided_dry_run")
+        return False
+    posted = chatwoot_client().post_private_note(
+        int(message.conversation_id), _capture_note(result)
+    )
+    if posted.ok:
+        _increment("order_capture_notes_posted")
+        return True
+    _increment("note_post_failed")
+    log.error(
+        "order capture note failed conversation=%s message=%s status=%s detail=%s",
+        message.conversation_id,
+        message.message_id,
+        posted.status_code,
+        posted.detail,
+    )
+    return False
+
+
 def process_message(message: ParsedMessage) -> bool:
     """Run one requested draft action; true means a private note was posted."""
     decision = _decision(message)
@@ -217,11 +305,19 @@ def process_message(message: ParsedMessage) -> bool:
         )
         return False
 
+    attachment_text = None
+    if order_capture_enabled():
+        attachment_text = extract_attachment_text(message.attachments, logger=log)
+        captured = _capture_order(message, decision, attachment_text)
+        if captured is not None:
+            return _report_capture(message, captured)
+
     from dewie_brain.drafter import DraftRequest, draft_reply
 
     _increment("drafter_calls")
     try:
-        attachment_text = extract_attachment_text(message.attachments, logger=log)
+        if attachment_text is None:
+            attachment_text = extract_attachment_text(message.attachments, logger=log)
         result = draft_reply(DraftRequest(
             category=decision.category or "GENERAL",
             from_email=message.from_email,
@@ -324,6 +420,7 @@ def health() -> dict:
         "service": "dewie-desk-bridge",
         "shadow_mode": shadow_mode(),
         "dry_run": dry_run(),
+        "order_capture": order_capture_enabled(),
         "webhook_auth": "enforced" if webhook_auth.is_enforced() else "unenforced",
         "outbound_auth": outbound.configuration_problem() or "configured",
         "chatwoot_configured": bool(os.environ.get("CHATWOOT_API_TOKEN", "").strip()),
