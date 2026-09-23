@@ -74,6 +74,28 @@ until the board stays sane on its own.
    After a private draft note is posted, the bridge removes the label; a later
    customer reply requires a fresh label action. SEND stays a human click.
 
+## Spam auto-resolve
+
+Inbound email that `bridge/spam_rules.csv` (or, optionally, the DewieOps
+classifier) calls spam/noise gets the `spam` label and is resolved — no draft,
+nothing deleted, no IMAP folder touched. Off by default
+(`SPAM_AUTORESOLVE_ENABLED`), dry-run first (`SPAM_AUTORESOLVE_DRY_RUN`); see
+`.env.example`. Every verdict is appended to `data/spam-autoresolve.jsonl`
+(conversation, sender, subject, rule or classifier score, outcome); a false
+positive is also findable in Chatwoot by filtering on the `spam` label, and a
+new message from the sender reopens the conversation. Add rules by editing the
+CSV. Before enabling, run the read-only report with a user (not bot) token:
+
+```
+cd bridge
+python spam_dryrun.py --days 2 --out spam-dryrun.md   # add --classifier to include stage 2
+```
+
+The bot-token-safe endpoints used are `conversations/{id}/labels` (index,
+create) and `conversations/{id}/toggle_status`. Create the `spam` label under
+Settings → Labels once so it shows with a colour; Chatwoot tags the
+conversation either way.
+
 ## Who unblocks what
 
 | Step | Owner |

@@ -261,6 +261,55 @@ class ChatwootClient:
             )
         return ConversationResult(True, tuple(messages), meta, response.status_code, "fetched")
 
+    def add_label(self, conversation_id: int, label: str) -> LabelResult:
+        """Add one label while preserving the conversation's other labels.
+
+        Uses only ``labels#index`` and ``labels#create``, which Chatwoot lets an
+        AgentBot token call (``BOT_ACCESSIBLE_ENDPOINTS``), so this works with a
+        user token or a bot token.
+        """
+        path = f"/conversations/{conversation_id}/labels"
+        try:
+            current = requests.get(self._url(path), headers=self._headers, timeout=self.timeout)
+            if current.status_code // 100 != 2:
+                return LabelResult(False, status_code=current.status_code,
+                                   detail=f"label_read_http_{current.status_code}")
+            labels = current.json().get("payload") or []
+            if not isinstance(labels, list):
+                raise ValueError("unexpected label response shape")
+            if label in labels:
+                return LabelResult(True, tuple(labels), current.status_code, "already_present")
+            wanted = [*labels, label]
+            response = requests.post(self._url(path), json={"labels": wanted},
+                                     headers=self._headers, timeout=self.timeout)
+        except (requests.RequestException, ValueError, AttributeError) as exc:
+            return LabelResult(False, detail=f"request_error:{type(exc).__name__}")
+        if response.status_code // 100 != 2:
+            return LabelResult(False, status_code=response.status_code,
+                               detail=f"label_write_http_{response.status_code}")
+        return LabelResult(True, tuple(wanted), response.status_code, "added")
+
+    def resolve_conversation(self, conversation_id: int) -> PostResult:
+        """Set status to resolved. Never deletes; a new inbound message reopens it.
+
+        ``conversations#toggle_status`` is on Chatwoot's bot-accessible list.
+        """
+        if not conversation_id:
+            return PostResult(False, detail="missing_conversation_id")
+        try:
+            response = requests.post(
+                self._url(f"/conversations/{int(conversation_id)}/toggle_status"),
+                json={"status": "resolved"},
+                headers=self._headers,
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            return PostResult(False, detail=f"request_error:{type(exc).__name__}")
+        if response.status_code // 100 != 2:
+            return PostResult(False, status_code=response.status_code,
+                              detail=f"http_{response.status_code}")
+        return PostResult(True, response.status_code, None, "resolved")
+
     def remove_label(self, conversation_id: int, label: str) -> LabelResult:
         """Remove one command label while preserving the conversation's other labels."""
         path = f"/conversations/{conversation_id}/labels"

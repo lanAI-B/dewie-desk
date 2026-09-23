@@ -19,6 +19,22 @@ LIVE_SECRETS = (
 )
 
 
+SPAM_SETTINGS = (
+    "SPAM_AUTORESOLVE_ENABLED",
+    "SPAM_AUTORESOLVE_DRY_RUN",
+    "SPAM_CLASSIFIER_ENABLED",
+    "SPAM_CLASSIFIER_MIN_CONFIDENCE",
+)
+
+
+@pytest.fixture(autouse=True)
+def spam_defaults(monkeypatch, tmp_path):
+    """Every test starts from the shipped spam defaults with a throwaway audit log."""
+    for name in SPAM_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SPAM_AUTORESOLVE_LOG", str(tmp_path / "spam-audit.jsonl"))
+
+
 @pytest.fixture(autouse=True)
 def no_live_chatwoot(monkeypatch):
     """Prove no test reaches a real HTTP endpoint or inherits live credentials.

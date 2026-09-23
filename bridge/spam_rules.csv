@@ -1,0 +1,65 @@
+action,sender,subject,subject_match,source
+# Deterministic spam/noise rules for the Chatwoot bridge. Data, not code: edit here.
+#
+# action        spam  = label `spam` and resolve the conversation
+#               allow = never auto-resolve (beats subject-only rules and the classifier,
+#                       loses to a spam rule that names this exact sender)
+# sender        exact address, "@domain" (domain and its subdomains), or empty = any sender
+# subject       phrase to find in the subject; empty = any subject
+# subject_match contains  = case-insensitive substring
+#               word      = case-insensitive, whole words only
+#               word_case = case-sensitive, whole words only ("FREE", not "free shipping?")
+#
+# Seeded 2026-09-23 from DewieBrain dewie_brain/config/email_classification.csv
+# (rows routed to INBOX.Trash / INBOX.Junk Email) and the WHITELISTED_* sets in
+# dewie_brain/tools/mail_cats.py. Copied as data; nothing imports DewieBrain.
+# Rows routed to personal or archive folders (Asana, Reddit, McKinsey, Gerald,
+# Ariba invoices, sales@ invoice/access-key notices) are deliberately not here:
+# they are business mail, not noise.
+
+# --- email_classification.csv: INBOX.Trash ---
+spam,,Undelivered Mail Returned to Sender,contains,email_classification.csv
+spam,order_confirmation@corporate-central.com,ACTBOK Order Requires Approval - Order Number,contains,email_classification.csv
+spam,order_confirmation@corporate-central.com,ACTEX Backorder has been received at warehouse.,contains,email_classification.csv
+spam,sales@actuarialbookstore.com,Actuarial Bookstore Confirmation,contains,email_classification.csv
+spam,sellersupport@shop.tiktok.com,,contains,email_classification.csv
+spam,sapcloudsupport@alerts.ondemand.com,,contains,email_classification.csv
+spam,ebay@ebay.com,,contains,email_classification.csv
+spam,sales3@bestpricewholesale4all.com,,contains,email_classification.csv
+spam,ebay@reply.ebay.com,,contains,email_classification.csv
+spam,sap@mail.sap.com,,contains,email_classification.csv
+spam,no-reply@mail.instagram.com,,contains,email_classification.csv
+
+# --- email_classification.csv: INBOX.Junk Email (subject-only) ---
+spam,,CONGRATULATIONS,word_case,email_classification.csv
+spam,,You have won,word,email_classification.csv
+spam,,Claim your prize,word,email_classification.csv
+spam,,FREE,word_case,email_classification.csv
+spam,,URGENT ACTION REQUIRED,word,email_classification.csv
+spam,,Verify your account,word,email_classification.csv
+spam,,Your payment is overdue,word,email_classification.csv
+spam,,Limited time offer,word,email_classification.csv
+
+# --- mail_cats.py WHITELISTED_SENDERS / WHITELISTED_DOMAINS ---
+allow,noreply@veracore.com,,contains,mail_cats.py
+allow,notifications@veracore.com,,contains,mail_cats.py
+allow,noreply@rfrtech.com,,contains,mail_cats.py
+allow,support@actexlearning.com,,contains,mail_cats.py
+allow,noreply@actuarialbookstore.com,,contains,mail_cats.py
+allow,service@paypal.com,,contains,mail_cats.py
+allow,noreply@intuit.com,,contains,mail_cats.py
+allow,tracking@fedex.com,,contains,mail_cats.py
+allow,auto-notify@usps.com,,contains,mail_cats.py
+allow,noreply@ups.com,,contains,mail_cats.py
+allow,@actuarialbookstore.com,,contains,mail_cats.py
+allow,@actexlearning.com,,contains,mail_cats.py
+allow,@veracore.com,,contains,mail_cats.py
+allow,@rfrtech.com,,contains,mail_cats.py
+allow,@soa.org,,contains,mail_cats.py
+allow,@casact.org,,contains,mail_cats.py
+allow,@purechat.com,,contains,mail_cats.py
+allow,@southernkentuckywarehouse.com,,contains,mail_cats.py
+
+# --- bridge additions: money notices must never be auto-resolved ---
+allow,@stripe.com,,contains,dewie-desk
+allow,@paypal.com,,contains,dewie-desk
