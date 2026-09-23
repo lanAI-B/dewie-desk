@@ -22,6 +22,8 @@ except ImportError:
     pass
 
 from chatwoot import ChatwootClient
+from conv_memory_sync import ConvMemoryWriter
+import sent_copy
 from attachments import extract_attachment_text
 from parser import (
     ParsedMessage,
@@ -45,6 +47,7 @@ _runtime = None
 _state: DedupStore | None = None
 _metrics: Counter = Counter()
 _metrics_lock = threading.Lock()
+_memory_writer: ConvMemoryWriter | None = None
 DRAFT_LABEL = "dewie-draft"
 
 
@@ -107,6 +110,25 @@ def dedup_store() -> DedupStore:
         configured = (os.environ.get("BRIDGE_STATE_DB") or "").strip()
         _state = DedupStore(configured or default)
     return _state
+
+
+def conv_memory_writer() -> ConvMemoryWriter:
+    global _memory_writer
+    if _memory_writer is None:
+        _memory_writer = ConvMemoryWriter()
+    return _memory_writer
+
+
+def process_sent_message(sent: sent_copy.SentMessage) -> None:
+    """Copy one Chatwoot-sent reply to the Sent folder and/or conv_memory."""
+    outcome = sent_copy.process_sent(
+        sent,
+        store=dedup_store(),
+        client=chatwoot_client(),
+        writer_factory=conv_memory_writer,
+    )
+    for destination, result in outcome.items():
+        _increment(f"{destination}_{result}")
 
 
 def _command_key(payload: dict) -> str:
@@ -355,6 +377,7 @@ def health() -> dict:
         "service": "dewie-desk-bridge",
         "shadow_mode": shadow_mode(),
         "dry_run": dry_run(),
+        "sent_copy": sent_copy.status(),
         "webhook_auth": "enforced" if webhook_auth.is_enforced() else "unenforced",
         "outbound_auth": outbound.configuration_problem() or "configured",
         "spam_autoresolve": spam.status(),
@@ -463,6 +486,28 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks) 
         raise HTTPException(status_code=400, detail="invalid_json")
 
     event = payload.get("event") if isinstance(payload, dict) else None
+    if event in sent_copy.SENT_EVENTS:
+        # An outgoing public reply Chatwoot has actually delivered (source_id set,
+        # which in v4.16.1 happens on message_updated). Incoming messages fall
+        # through to the draft path below unchanged.
+        sent, reason = sent_copy.screen_sent(payload)
+        if sent is not None:
+            if not sent_copy.any_enabled():
+                _increment("reason_sent_copy_disabled")
+                return {"accepted": False, "reason": "sent_copy_disabled"}
+            background_tasks.add_task(process_sent_message, sent)
+            _increment("sent_copy_scheduled")
+            return {
+                "accepted": True,
+                "action": "sent_copy_scheduled",
+                "conversation": sent.conversation_id,
+                "message": sent.message_id,
+            }
+        if event == "message_updated":
+            _increment("transport_filtered")
+            _increment(f"reason_{reason}")
+            return {"accepted": False, "reason": reason}
+
     if event == "message_created":
         message = parse_message_created(payload)
         if not message.should_process:

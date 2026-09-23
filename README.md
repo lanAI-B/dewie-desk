@@ -111,3 +111,24 @@ conversation either way.
 Phase 0 (extract canonical drafter + golden suite) — **done** in `DewieOps`
 (`dewie_brain/drafter/`). This repo is Phase 1: prove the mail loop on local against
 Rackspace IMAP/SMTP. M365 OAuth is a later inbox swap, gated on the migration.
+
+## Replies sent from Chatwoot, seen from Outlook and by drafts
+
+Off by default (`bridge/sent_copy.py`, `bridge/conv_memory_sync.py`). When
+Chatwoot has actually delivered a public reply on an email inbox it sets the
+message's `source_id` (the Message-ID the customer got) and fires
+`message_updated`. The bridge then, per flag:
+
+- `BRIDGE_SENT_COPY_ENABLED` - IMAP **APPEND** an RFC822 copy into that inbox's
+  mailbox Sent folder, flagged `\Seen`, with Chatwoot's Message-ID and the
+  In-Reply-To/References its mailer used, so Outlook threads it. Never SMTP.
+  Each copy carries `X-Dewie-Desk-Copy: <chatwoot message id>`; the Sent-folder
+  reader (`sent_sync`) must skip those or it would post the reply back as a note.
+- `BRIDGE_CONV_MEMORY_ENABLED` - one `conv_memory` row (role `assistant`,
+  agent_id `chatwoot`, customer email, subject, Chatwoot's timestamp).
+
+Both are deduped on the Chatwoot message id through the bridge's SQLite claim,
+so retries, later status updates and restarts do nothing. Private notes,
+drafts, unsent and failed messages have no `source_id` and are ignored.
+To turn on: subscribe the webhook to `message_updated`, set the flag(s) and the
+`SENT_COPY_*` mailbox map in `.env` (see `.env.example`), restart the bridge.
