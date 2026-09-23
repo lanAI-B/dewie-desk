@@ -32,6 +32,7 @@ from parser import (
 from state import DedupStore
 import conversations
 import outbound
+import spam
 import webhook_auth
 
 logging.basicConfig(level=logging.INFO)
@@ -315,6 +316,36 @@ def process_label_command(
         )
 
 
+def _spam_classify(message: ParsedMessage):
+    """Classifier stage for spam screening; raising means "no evidence"."""
+    from dewie_brain.desk import classify_message
+
+    _increment("spam_classifier_calls")
+    return classify_message(
+        classifier_runtime(),
+        from_email=message.from_email,
+        subject=message.subject,
+        body=message.body,
+        hints=[],
+    )
+
+
+def screen_inbound(message: ParsedMessage) -> str:
+    """Spam/noise screen for one newly recorded inbound message. Never drafts."""
+    try:
+        outcome = spam.screen(message, chatwoot_client(), classify=_spam_classify)
+    except Exception as exc:  # screening must never break inbound recording
+        outcome = "error"
+        log.exception(
+            "spam screen failed conversation=%s message=%s error=%s",
+            message.conversation_id,
+            message.message_id,
+            type(exc).__name__,
+        )
+    _increment(f"spam_{outcome}")
+    return outcome
+
+
 @app.get("/health")
 def health() -> dict:
     with _metrics_lock:
@@ -326,6 +357,7 @@ def health() -> dict:
         "dry_run": dry_run(),
         "webhook_auth": "enforced" if webhook_auth.is_enforced() else "unenforced",
         "outbound_auth": outbound.configuration_problem() or "configured",
+        "spam_autoresolve": spam.status(),
         "chatwoot_configured": bool(os.environ.get("CHATWOOT_API_TOKEN", "").strip()),
         "counts": counts,
     }
@@ -441,12 +473,16 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks) 
             _increment("duplicate_message")
             return {"accepted": False, "reason": "duplicate_message"}
         _increment("inbound_recorded")
-        return {
+        response = {
             "accepted": True,
             "action": "recorded",
             "conversation": message.conversation_id,
             "message": message.message_id,
         }
+        if spam.enabled():
+            background_tasks.add_task(screen_inbound, message)
+            response["spam_screen"] = "dry_run" if spam.dry_run() else "queued"
+        return response
 
     if event == "conversation_updated":
         conversation_id = draft_label_added(payload, DRAFT_LABEL)
