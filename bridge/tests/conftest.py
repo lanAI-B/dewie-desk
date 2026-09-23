@@ -1,5 +1,6 @@
 """Test the bridge against the sibling DewieOps checkout required in production."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -7,7 +8,10 @@ import pytest
 import requests
 
 
-DEWIEOPS = Path(__file__).resolve().parents[3] / "DewieOps"
+# DEWIEOPS_PATH points the suite at another DewieOps checkout (a feature worktree);
+# by default it is the sibling checkout, as on the office box.
+DEWIEOPS = Path(os.environ.get("DEWIEOPS_PATH") or
+                Path(__file__).resolve().parents[3] / "DewieOps").resolve()
 if not DEWIEOPS.is_dir():
     raise RuntimeError(f"Sibling DewieOps checkout not found at {DEWIEOPS}")
 sys.path.insert(0, str(DEWIEOPS))
