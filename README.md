@@ -74,6 +74,22 @@ until the board stays sane on its own.
    After a private draft note is posted, the bridge removes the label; a later
    customer reply requires a fresh label action. SEND stays a human click.
 
+## Who unblocks what
+
+| Step | Owner |
+|------|-------|
+| Repo scaffold, bridge code | Dewie (this repo) |
+| Docker running on the box | Lana (deployment side) |
+| Rackspace test-mailbox IMAP/SMTP creds | Lana (already in hand — desk uses them) |
+| Azure app registration / M365 creds | Lana — **future**, only when M365 migration lands |
+| Watching the shadow-run board | Both |
+
+## Status
+
+Phase 0 (extract canonical drafter + golden suite) — **done** in `DewieOps`
+(`dewie_brain/drafter/`). This repo is Phase 1: prove the mail loop on local against
+Rackspace IMAP/SMTP. M365 OAuth is a later inbox swap, gated on the migration.
+
 ## Replies sent from Chatwoot, seen from Outlook and by drafts
 
 Off by default (`bridge/sent_copy.py`, `bridge/conv_memory_sync.py`). When
@@ -94,19 +110,3 @@ so retries, later status updates and restarts do nothing. Private notes,
 drafts, unsent and failed messages have no `source_id` and are ignored.
 To turn on: subscribe the webhook to `message_updated`, set the flag(s) and the
 `SENT_COPY_*` mailbox map in `.env` (see `.env.example`), restart the bridge.
-
-## Who unblocks what
-
-| Step | Owner |
-|------|-------|
-| Repo scaffold, bridge code | Dewie (this repo) |
-| Docker running on the box | Lana (deployment side) |
-| Rackspace test-mailbox IMAP/SMTP creds | Lana (already in hand — desk uses them) |
-| Azure app registration / M365 creds | Lana — **future**, only when M365 migration lands |
-| Watching the shadow-run board | Both |
-
-## Status
-
-Phase 0 (extract canonical drafter + golden suite) — **done** in `DewieOps`
-(`dewie_brain/drafter/`). This repo is Phase 1: prove the mail loop on local against
-Rackspace IMAP/SMTP. M365 OAuth is a later inbox swap, gated on the migration.

@@ -111,6 +111,25 @@ def dedup_store() -> DedupStore:
     return _state
 
 
+def conv_memory_writer() -> ConvMemoryWriter:
+    global _memory_writer
+    if _memory_writer is None:
+        _memory_writer = ConvMemoryWriter()
+    return _memory_writer
+
+
+def process_sent_message(sent: sent_copy.SentMessage) -> None:
+    """Copy one Chatwoot-sent reply to the Sent folder and/or conv_memory."""
+    outcome = sent_copy.process_sent(
+        sent,
+        store=dedup_store(),
+        client=chatwoot_client(),
+        writer_factory=conv_memory_writer,
+    )
+    for destination, result in outcome.items():
+        _increment(f"{destination}_{result}")
+
+
 def _command_key(payload: dict) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
         "utf-8", "surrogateescape"
@@ -316,25 +335,6 @@ def process_label_command(
             consumed.status_code,
             consumed.detail,
         )
-
-
-def conv_memory_writer() -> ConvMemoryWriter:
-    global _memory_writer
-    if _memory_writer is None:
-        _memory_writer = ConvMemoryWriter()
-    return _memory_writer
-
-
-def process_sent_message(sent: sent_copy.SentMessage) -> None:
-    """Copy one Chatwoot-sent reply to the Sent folder and/or conv_memory."""
-    outcome = sent_copy.process_sent(
-        sent,
-        store=dedup_store(),
-        client=chatwoot_client(),
-        writer_factory=conv_memory_writer,
-    )
-    for destination, result in outcome.items():
-        _increment(f"{destination}_{result}")
 
 
 @app.get("/health")
