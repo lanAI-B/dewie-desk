@@ -39,7 +39,7 @@ def message():
 
 
 def decide(category):
-    return lambda value: DraftDecision(DecisionAction.DRAFT, "drafted", category=category)
+    return lambda value, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category=category)
 
 
 class FakeClient:

@@ -1,0 +1,382 @@
+{
+  "corpus": "desk-shadow-v1",
+  "note": [
+    "Sanitized, wholly synthetic desk traffic for the Slice 3 offline shadow replay.",
+    "No captured production payload, customer name, real address, order number or token",
+    "appears here. Every address is on example.com / example.net / a .example TLD, which",
+    "cannot resolve, so a mistake in this corpus cannot mail anyone.",
+    "",
+    "'classification' is the label the corpus asserts the classifier would return. It is",
+    "recorded, not computed: the replay spends no model call, so this file validates the",
+    "POLICY, not the classifier's accuracy. null means the classifier failed or returned",
+    "something unvalidatable. The key being ABSENT asserts the classifier is never reached",
+    "for that case, and the replay reports a corpus defect if it is.",
+    "",
+    "'expected' is the outcome a human says is correct for the message, so a disagreement",
+    "with the policy shows up as a finding rather than being assumed away."
+  ],
+  "base": {
+    "event": "message_created",
+    "id": 1000,
+    "message_type": "incoming",
+    "private": false,
+    "content": "",
+    "content_attributes": {"email": {"subject": ""}},
+    "sender": {"email": "", "name": "", "type": "contact"},
+    "conversation": {"id": 500, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]},
+    "inbox": {"id": 2, "name": "Support"},
+    "account": {"id": 1}
+  },
+  "cases": [
+    {
+      "id": "transport-outgoing-agent-reply",
+      "note": "An agent's own outbound reply echoed back by Chatwoot.",
+      "expected": "transport_filtered",
+      "payload": {
+        "id": 1001,
+        "message_type": "outgoing",
+        "content": "Thanks, that is on its way.",
+        "sender": {"email": "cs@example.com", "type": "user"}
+      }
+    },
+    {
+      "id": "transport-private-note",
+      "note": "A private note between agents, including one Dewie posted itself.",
+      "expected": "transport_filtered",
+      "payload": {
+        "id": 1002,
+        "private": true,
+        "content": "**Dewie draft** (private; model)",
+        "sender": {"email": "cs@example.com", "type": "user"}
+      }
+    },
+    {
+      "id": "transport-activity-event",
+      "note": "Chatwoot activity noise: conversation assigned.",
+      "expected": "transport_filtered",
+      "payload": {
+        "id": 1003,
+        "message_type": "activity",
+        "content": "Conversation was assigned",
+        "sender": {"email": "", "type": "user"}
+      }
+    },
+    {
+      "id": "transport-empty-body-no-attachment",
+      "note": "An inbound with neither text nor attachment; nothing to classify.",
+      "expected": "transport_filtered",
+      "payload": {
+        "id": 1004,
+        "content": "   ",
+        "sender": {"email": "reader@example.net", "type": "contact"}
+      }
+    },
+    {
+      "id": "transport-missing-sender-address",
+      "note": "A contact message whose sender carries no email address.",
+      "expected": "transport_filtered",
+      "payload": {
+        "id": 1005,
+        "content": "Any update?",
+        "sender": {"email": "", "name": "Web Visitor", "type": "contact"}
+      }
+    },
+    {
+      "id": "customer-order-status",
+      "note": "Plain order status question from a retail customer.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "order_status", "actor_confidence": 0.95, "intent_confidence": 0.93},
+      "payload": {
+        "id": 1010,
+        "content": "Hi, I ordered a study manual last Tuesday and have not seen a shipping notice yet. Can you tell me where it is?",
+        "content_attributes": {"email": {"subject": "Where is my order?", "message_id": "<c-1010@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "amy.buyer@example.net", "name": "Amy Buyer", "type": "contact"},
+        "conversation": {"id": 501, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "customer-place-order",
+      "note": "Retail customer asking to buy a named product.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "place_order", "actor_confidence": 0.94, "intent_confidence": 0.9},
+      "payload": {
+        "id": 1011,
+        "content": "I would like to buy the printed study manual and the online seminar bundle. What is the total with shipping to Ohio?",
+        "content_attributes": {"email": {"subject": "Purchase question", "message_id": "<c-1011@mail.example.net>", "to": ["sales@example.com"]}},
+        "sender": {"email": "ben.reader@example.net", "name": "Ben Reader", "type": "contact"},
+        "conversation": {"id": 502, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "customer-return-refund",
+      "note": "Retail customer returning a duplicate printed book.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "return_refund", "actor_confidence": 0.92, "intent_confidence": 0.91},
+      "payload": {
+        "id": 1012,
+        "content": "I accidentally ordered two copies of the same manual. How do I send one back for a refund?",
+        "content_attributes": {"email": {"subject": "Return a duplicate", "message_id": "<c-1012@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "cora.student@example.net", "name": "Cora Student", "type": "contact"},
+        "conversation": {"id": 503, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "customer-pass-guarantee-claim",
+      "note": "A pass-guarantee claim; the drafter needs the PG lane, not the generic order lane.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "modify_order", "actor_confidence": 0.9, "intent_confidence": 0.86},
+      "payload": {
+        "id": 1013,
+        "content": "Unfortunately I failed the exam in the spring sitting. I believe my purchase included the pass guarantee - how do I claim it?",
+        "content_attributes": {"email": {"subject": "Pass guarantee", "message_id": "<c-1013@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "dana.candidate@example.net", "name": "Dana Candidate", "type": "contact"},
+        "conversation": {"id": 504, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "customer-access-support",
+      "note": "Login/access problem on a digital product.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "access_support", "actor_confidence": 0.93, "intent_confidence": 0.89},
+      "payload": {
+        "id": 1014,
+        "content": "My online course says my access expired but I only started it last month. Can you check my account?",
+        "content_attributes": {"email": {"subject": "Cannot get in", "message_id": "<c-1014@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "eli.learner@example.net", "name": "Eli Learner", "type": "contact"},
+        "conversation": {"id": 505, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "customer-attachment-only-question",
+      "note": "Screenshot with no body text; transport must screen it in on the attachment alone.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "product_question", "actor_confidence": 0.84, "intent_confidence": 0.8},
+      "payload": {
+        "id": 1015,
+        "content": "",
+        "attachments": [{"file_type": "image", "file_name": "screenshot.png", "data_url": "https://desk.example.com/files/screenshot.png"}],
+        "content_attributes": {"email": {"subject": "Is this the right edition?", "message_id": "<c-1015@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "fay.reader@example.net", "name": "Fay Reader", "type": "contact"},
+        "conversation": {"id": 506, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "corp-coordinator-extension",
+      "note": "A corporate training coordinator extending seats for her team.",
+      "expected": "draft",
+      "classification": {"actor": "corp_coordinator", "intent": "modify_order", "actor_confidence": 0.88, "intent_confidence": 0.85},
+      "payload": {
+        "id": 1020,
+        "content": "Three of our analysts need their online access extended by six months. Please quote the extension and send it to me for approval.",
+        "content_attributes": {"email": {"subject": "Extension for our team", "message_id": "<c-1020@mail.example.com>", "to": ["sales@example.com"]}},
+        "sender": {"email": "coordinator@bigfirm.example", "name": "Gita Coordinator", "type": "contact"},
+        "conversation": {"id": 507, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "reseller-product-question",
+      "note": "An overseas reseller asking which edition is current.",
+      "expected": "draft",
+      "classification": {"actor": "reseller", "intent": "product_question", "actor_confidence": 0.86, "intent_confidence": 0.87},
+      "payload": {
+        "id": 1021,
+        "content": "Which edition of the manual is current for the autumn sitting? We stock for our students and do not want the superseded printing.",
+        "content_attributes": {"email": {"subject": "Current edition", "message_id": "<c-1021@mail.example.com>", "to": ["sales@example.com"]}},
+        "sender": {"email": "orders@bookshop.example", "name": "Bookshop Ltd", "type": "contact"},
+        "conversation": {"id": 508, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "vendor-partner-policy-question",
+      "note": "A publishing partner asking about the returns policy wording.",
+      "expected": "draft",
+      "classification": {"actor": "vendor_partner", "intent": "policy_question", "actor_confidence": 0.82, "intent_confidence": 0.81},
+      "payload": {
+        "id": 1022,
+        "content": "Could you confirm the wording of the returns window we should print on the back cover for the next run?",
+        "content_attributes": {"email": {"subject": "Returns wording", "message_id": "<c-1022@mail.example.com>", "to": ["support@example.com"]}},
+        "sender": {"email": "production@publisher.example", "name": "Publisher Production", "type": "contact"},
+        "conversation": {"id": 509, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "customer-discount-request",
+      "note": "A student asking for a student discount; routed, not decided, by the desk.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "discount_request", "actor_confidence": 0.91, "intent_confidence": 0.88},
+      "payload": {
+        "id": 1023,
+        "content": "Is there a student rate on the full bundle? I am taking two exams this year and the list price is out of reach.",
+        "content_attributes": {"email": {"subject": "Student pricing", "message_id": "<c-1023@mail.example.net>", "to": ["sales@example.com"]}},
+        "sender": {"email": "hal.student@example.net", "name": "Hal Student", "type": "contact"},
+        "conversation": {"id": 510, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "customer-confidence-exactly-at-floor",
+      "note": "Boundary case: both axes land exactly on the 0.75 floor, which is not below it.",
+      "expected": "draft",
+      "classification": {"actor": "customer", "intent": "order_status", "actor_confidence": 0.75, "intent_confidence": 0.75},
+      "payload": {
+        "id": 1024,
+        "content": "Following up on the parcel - has it left yet?",
+        "content_attributes": {"email": {"subject": "Following up", "message_id": "<c-1024@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "ida.buyer@example.net", "name": "Ida Buyer", "type": "contact"},
+        "conversation": {"id": 511, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "internal-forwarded-handoff",
+      "note": "A teammate forwarding a customer's actionable request from their own mailbox.",
+      "expected": "draft",
+      "classification": {"actor": "internal", "intent": "return_refund", "actor_confidence": 0.9, "intent_confidence": 0.84},
+      "payload": {
+        "id": 1030,
+        "content": "Can you take this one?\n\n---------- Forwarded message ----------\nFrom: jo.buyer@example.net\nSent: Monday\nSubject: Wrong book arrived\n\nI received the wrong title and would like to return it.",
+        "content_attributes": {"email": {"subject": "Fwd: Wrong book arrived", "message_id": "<i-1030@mail.example.com>", "to": ["support@example.com"]}},
+        "sender": {"email": "teammate@actexlearning.com", "name": "Internal Teammate", "type": "contact"},
+        "conversation": {"id": 512, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "internal-not-a-handoff",
+      "note": "A teammate's own question. Internal identity alone is not a customer request.",
+      "expected": "triage",
+      "classification": {"actor": "internal", "intent": "product_question", "actor_confidence": 0.89, "intent_confidence": 0.83},
+      "payload": {
+        "id": 1031,
+        "content": "Do we still stock the older printing anywhere, or is the warehouse clear of it?",
+        "content_attributes": {"email": {"subject": "Old printing", "message_id": "<i-1031@mail.example.com>", "to": ["support@example.com"]}},
+        "sender": {"email": "teammate@actuarialbookstore.com", "name": "Internal Teammate", "type": "contact"},
+        "conversation": {"id": 513, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "system-noreply-order-approval",
+      "note": "Storefront OMS notice from a noreply address. Reads as place_order and must never be answered.",
+      "expected": "skip",
+      "payload": {
+        "id": 1040,
+        "content": "Order Requires Approval. Order 00000 is held pending approval by the account administrator.",
+        "content_attributes": {"email": {"subject": "Order Requires Approval", "message_id": "<s-1040@mail.example.com>", "to": ["support@example.com"]}},
+        "sender": {"email": "noreply@storefront.example", "name": "Storefront", "type": "contact"},
+        "conversation": {"id": 514, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "system-bounce-mailer-daemon",
+      "note": "A delivery failure notice arriving as a contact.",
+      "expected": "skip",
+      "payload": {
+        "id": 1041,
+        "content": "Delivery has failed to these recipients or groups.",
+        "content_attributes": {"email": {"subject": "Undeliverable: Your order", "message_id": "<s-1041@mail.example.com>", "to": ["support@example.com"]}},
+        "sender": {"email": "mailer-daemon@mail.example.com", "name": "Mail Delivery System", "type": "contact"},
+        "conversation": {"id": 515, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "system-sender-without-system-localpart",
+      "note": "Automated mail from an ordinary-looking address; only the classifier can call this one.",
+      "expected": "skip",
+      "classification": {"actor": "system", "intent": "place_order", "actor_confidence": 0.87, "intent_confidence": 0.79},
+      "payload": {
+        "id": 1042,
+        "content": "This is an automated message. Purchase requisition 00000 has been submitted for approval in the procurement portal. Do not reply to this message.",
+        "content_attributes": {"email": {"subject": "Requisition submitted", "message_id": "<s-1042@mail.example.com>", "to": ["sales@example.com"]}},
+        "sender": {"email": "procurement@corporate-central.example", "name": "Procurement Portal", "type": "contact"},
+        "conversation": {"id": 516, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "notify-carrier-tracking-update",
+      "note": "A carrier FYI addressed to a human actor. Nothing is owed in reply.",
+      "expected": "skip",
+      "classification": {"actor": "vendor_partner", "intent": "notify", "actor_confidence": 0.85, "intent_confidence": 0.9},
+      "payload": {
+        "id": 1043,
+        "content": "Tracking update: parcel 000000000 is out for delivery. This mailbox is not monitored.",
+        "content_attributes": {"email": {"subject": "Parcel out for delivery", "message_id": "<s-1043@mail.example.com>", "to": ["support@example.com"]}},
+        "sender": {"email": "tracking@shipper.example", "name": "Shipper Tracking", "type": "contact"},
+        "conversation": {"id": 517, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "classifier-failed",
+      "note": "The classifier errored or returned something unvalidatable on a real customer message.",
+      "expected": "triage",
+      "classification": null,
+      "payload": {
+        "id": 1050,
+        "content": "I have a question about my invoice and the seminar dates, and I am not sure who to ask.",
+        "content_attributes": {"email": {"subject": "A couple of questions", "message_id": "<c-1050@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "kim.buyer@example.net", "name": "Kim Buyer", "type": "contact"},
+        "conversation": {"id": 518, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "unknown-actor",
+      "note": "Sender cannot be placed; the request itself is clear enough.",
+      "expected": "triage",
+      "classification": {"actor": "unknown", "intent": "order_status", "actor_confidence": 0.41, "intent_confidence": 0.88},
+      "payload": {
+        "id": 1051,
+        "content": "Checking on the shipment for the account - is it out yet?",
+        "content_attributes": {"email": {"subject": "Shipment", "message_id": "<c-1051@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "info@unfamiliar.example", "name": "", "type": "contact"},
+        "conversation": {"id": 519, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "unknown-intent",
+      "note": "A known customer whose ask is not any of the known intents.",
+      "expected": "triage",
+      "classification": {"actor": "customer", "intent": "unknown", "actor_confidence": 0.92, "intent_confidence": 0.3},
+      "payload": {
+        "id": 1052,
+        "content": "I wanted to pass along some feedback about the layout of the practice problems section.",
+        "content_attributes": {"email": {"subject": "Some feedback", "message_id": "<c-1052@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "lee.reader@example.net", "name": "Lee Reader", "type": "contact"},
+        "conversation": {"id": 520, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "low-confidence-both-axes",
+      "note": "A short ambiguous line the classifier is not sure about on either axis.",
+      "expected": "triage",
+      "classification": {"actor": "customer", "intent": "modify_order", "actor_confidence": 0.55, "intent_confidence": 0.6},
+      "payload": {
+        "id": 1053,
+        "content": "Can we change it?",
+        "content_attributes": {"email": {"subject": "Re: the order", "message_id": "<c-1053@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "max.buyer@example.net", "name": "Max Buyer", "type": "contact"},
+        "conversation": {"id": 521, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "low-confidence-intent-only",
+      "note": "Confident about who, unsure what they want. One weak axis is enough to stop.",
+      "expected": "triage",
+      "classification": {"actor": "customer", "intent": "place_order", "actor_confidence": 0.94, "intent_confidence": 0.62},
+      "payload": {
+        "id": 1054,
+        "content": "Thinking about the bundle, but also had a question about last year's purchase.",
+        "content_attributes": {"email": {"subject": "Bundle", "message_id": "<c-1054@mail.example.net>", "to": ["sales@example.com"]}},
+        "sender": {"email": "nia.buyer@example.net", "name": "Nia Buyer", "type": "contact"},
+        "conversation": {"id": 522, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    },
+    {
+      "id": "duplicate-of-customer-order-status",
+      "note": "Chatwoot redelivering an already recorded webhook. Must not be screened twice.",
+      "expected": "duplicate",
+      "payload": {
+        "id": 1010,
+        "content": "Hi, I ordered a study manual last Tuesday and have not seen a shipping notice yet. Can you tell me where it is?",
+        "content_attributes": {"email": {"subject": "Where is my order?", "message_id": "<c-1010@mail.example.net>", "to": ["support@example.com"]}},
+        "sender": {"email": "amy.buyer@example.net", "name": "Amy Buyer", "type": "contact"},
+        "conversation": {"id": 501, "channel": "Channel::Email", "messages": [{"sender_type": "Contact"}]}
+      }
+    }
+  ]
+}

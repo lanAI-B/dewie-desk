@@ -16,7 +16,17 @@ built, QA has not been changed, and production remains unchanged.
   Command Center already owns 3000. A Chatwoot release tag is mandatory rather
   than silently falling back to `latest`.
 - Slice 2's policy contract is implemented and integrated in source.
-- Slice 3's offline/QA shadow validation has not started.
+- Slice 3's OFFLINE half is done; a narrow attended local validation has also
+  passed, but no QA deployment has started. A sanitized
+  28-case corpus replays through the real transport gate, the real durable dedup
+  store and the real DewieOps policy with no model call, and produces the
+  aggregate the review report requires. Result and limits are in
+  `docs/shadow-replay-offline.md`; the replay is `bridge/shadow.py` and runs in
+  the suite as `bridge/tests/test_shadow.py`. Headline: the replacement
+  authorizes 12 drafts where the bridge in production today would authorize 19,
+  and authorizes none that it refuses. The corpus RECORDS each classification
+  rather than computing it, so this is evidence about the policy and not about
+  the classifier - that half still needs a running Chatwoot and a test mailbox.
 - Slice 4 is implemented in source: the non-template drafter, read-only tool
   loop, attachment transcription, and utility extraction all consume the
   provider-neutral DewieOps runtime. Contract coverage passes for Anthropic and
@@ -35,7 +45,84 @@ built, QA has not been changed, and production remains unchanged.
   The command snapshots the newest already-recorded inbound ID before background
   work, so a later customer reply cannot ride an older label action.
   Live label-event and permission validation remains part of Slice 3.
+- Task #2705's Sent-folder continuity seam is implemented in source: every
+  inbound webhook now records the RFC822 threading headers it carries as a
+  local thread map, and a read-only Sent-folder pass resolves each externally
+  authored reply against that map and posts it as a private note, deduplicated
+  on the sent Message-ID. It is off by default, it is an attended command
+  rather than an HTTP route. Its Message-ID path and deduplication passed one
+  attended local disposable-Gmail run; see "Rethreading reliability" below.
 - Slice 5 has not started.
+
+## Rethreading reliability (task #2705, acceptance evidence)
+
+What the Sent-folder sync can and cannot promise, stated before anyone connects
+a mailbox to it.
+
+**Proven offline**, by `bridge/tests/test_sent_sync.py` and the state tests:
+
+- An inbound `message_created` webhook records `msgid:` keys for its own
+  Message-ID, its `In-Reply-To`, and every `References` entry, plus
+  `thread:<subject>|<participant>` keys for the sender and each recipient.
+- A sent reply resolves in that order: `In-Reply-To`, then `References`
+  newest-first, then subject-and-recipient. The method used is counted
+  separately, so a run that leaned on the guess is visible as a guess.
+- One sent Message-ID produces at most one private note, across process
+  restarts and across a re-parse of the same mail, because the claim is a row
+  in SQLite rather than a set in memory.
+- A reply that resolves to nothing is reported by subject and recipient and is
+  never attached to a conversation by proximity.
+- Only `post_private_note` is reachable from this path. The fake client in the
+  tests raises on any other attribute, so a public message - which Chatwoot
+  would actually *send* - fails the suite rather than the customer.
+
+**Observed attended locally on 2026-09-16, using a disposable Gmail mailbox:**
+
+- Chatwoot message `30` contained `content_attributes.email.message_id`.
+- The signed inbound webhook recorded that Message-ID and resolved it to
+  conversation `9`.
+- A self-addressed test reply carried `In-Reply-To` for that inbound Message-ID.
+- The first read-only Sent pass resolved the reply and posted exactly one
+  private note. The second pass reported `duplicate_sent`, proving the sent
+  Message-ID claim prevented a second note.
+- Public outgoing messages remained at `0` throughout the run.
+
+This settles the Message-ID path for that local disposable-Gmail flow. It did
+not use customer mail, build an image, deploy QA, or authorize a cutover.
+
+**Limits that remain:**
+
+1. *Backfill has no map.* The map is built from inbound webhooks going forward,
+   so Sent mail older than the bridge cannot resolve by Message-ID at all. The
+   backfill #2705 wanted is limited to what the subject-and-recipient key can
+   place, and that key is deliberately last.
+2. *Subject keys are lossy on purpose.* Reply and forward prefixes and a
+   leading `[tag]` are stripped so one thread has one key. Two genuinely
+   different threads with the same trimmed subject and the same participant
+   collapse into one key, and the newest conversation wins it.
+3. *Sent mail is not filtered by mailbox.* Anything in the configured folder is
+   a candidate, including mail a person sent about something else entirely.
+   Those land in `unresolved` rather than in a conversation, but the count will
+   not be zero and should not be read as a fault.
+4. *Provider behavior still varies.* The attended run proved Gmail supplied
+   `In-Reply-To`; Outlook and other configured mailboxes still need their own
+   controlled check.
+
+The drafter is no longer blind in the one tested local flow. Treat that as
+narrow acceptance evidence, not as deployment evidence or a guarantee for all
+mail providers and historical threads.
+
+## 11 AM demo sequence
+
+1. From the dewie-desk repository root, run
+   `py -3.14 bridge\shadow.py --demo`.
+2. Show the four passing policy gates, zero false or newly authorized drafts,
+   and the seven drafts the replacement refuses that the current bridge allows.
+3. Explain the attended continuity result as a short chain: signed inbound
+   Message-ID -> conversation `9` -> one private Sent note -> `duplicate_sent`
+   on replay -> zero public outgoing.
+4. Close on scope: the demo is offline and synthetic; the continuity evidence
+   is local disposable Gmail; no image, QA deployment, or cutover exists yet.
 
 ## Outcome
 
@@ -160,7 +247,8 @@ Initial policy:
 not quietly fall back to the broadest, most expensive drafting path.
 
 Required reason codes include `transport_filtered`, `duplicate_message`,
-`system_sender`, `notification_only`, `classifier_failed`, `unknown_actor`,
+`system_sender_localpart`, `system_sender_classified`, `notification_only`,
+`classifier_failed`, `unknown_actor`,
 `unknown_intent`, `low_confidence`, `not_actionable`, `drafted`,
 `draft_failed`, and `note_post_failed`.
 
@@ -177,7 +265,10 @@ Acceptance gate:
 Run the new policy without changing the live desk:
 
 1. Replay sanitized representative fixtures through both the current and new
-   decision functions.
+   decision functions. **Done offline** - see `docs/shadow-replay-offline.md`.
+   The current bridge's rule is transcribed rather than imported, because
+   `dewie-desk` must keep no import path into DewieBrain (Slice 1 gate); the
+   transcription names its source revision and must be re-checked against it.
 2. Run the new bridge in an isolated QA/shadow configuration.
 3. In shadow mode, record the proposed decision and reason only. Do not call the
    drafter and do not post notes.
@@ -194,10 +285,13 @@ The review report must show:
 
 Acceptance gate:
 
-- No system or notification-only sample is draftable.
+- No system or notification-only sample is draftable. **Passing offline.**
 - Unknown and low-confidence samples consistently reach human review.
-- Legitimate customer requests remain draftable.
-- Lana approves the policy based on the shadow evidence.
+  **Passing offline.**
+- Legitimate customer requests remain draftable. **Passing offline.**
+- Lana approves the policy based on the shadow evidence. **Not met** - the
+  offline half cannot support this, because the corpus supplies the
+  classifications rather than the classifier.
 
 ## Slice 4: provider-neutral desk models
 

@@ -28,6 +28,21 @@ and email transport are Chatwoot's job; this repo owns only a thin layer on top:
 Both are the same principle: **reference, don't copy** — recreating either would put us
 back to owning the plumbing we chose to shed.
 
+## Safe demo check
+
+From the repository root, run one offline command before showing the policy:
+
+```
+py -3.14 bridge\shadow.py --demo
+```
+
+It replays 28 synthetic cases through the real transport gate, deduplication,
+and DewieOps decision policy, then prints a short readiness report. It makes no
+model call, reads no mailbox, calls no Chatwoot API, and cannot post a note or
+send customer mail. The command exits non-zero if any acceptance gate fails.
+Set `DEWIEOPS_PATH` only when the canonical DewieOps checkout is not the sibling
+`..\DewieOps` directory.
+
 ## Local pilot — order of operations
 
 Goal: prove the mail loop first — **inbound → ticket → reply back out** — on a
@@ -95,6 +110,20 @@ The bot-token-safe endpoints used are `conversations/{id}/labels` (index,
 create) and `conversations/{id}/toggle_status`. Create the `spam` label under
 Settings → Labels once so it shows with a colour; Chatwoot tags the
 conversation either way.
+5. **Sent-folder continuity** (optional, off by default). Chatwoot's email
+   channel reads INBOX only, so replies sent from Outlook are invisible to it
+   and a draft can contradict what CS already said. Set the `SENT_SYNC_*`
+   variables and run a pass by hand:
+   ```
+   cd bridge
+   python sent_sync.py          # dry run: resolve and count, post nothing
+   python sent_sync.py --post   # post the private notes
+   ```
+   The folder is opened read-only and fetched with `mark_seen=False`, each
+   reply is posted as a **private note** only, and one sent Message-ID can post
+   at most once. What it can and cannot place is written down under
+   "Rethreading reliability" in `docs/bridge-modernization-plan.md` — read that
+   before pointing it at a mailbox.
 
 ## Who unblocks what
 

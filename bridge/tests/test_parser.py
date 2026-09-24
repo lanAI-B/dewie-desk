@@ -154,3 +154,63 @@ def test_newest_customer_message_ignores_agent_activity_and_private_notes():
         through_message_id=43,
     )
     assert bounded.message_id == 40
+
+
+def test_threading_headers_are_normalized_for_the_thread_map():
+    value = payload()
+    value["content_attributes"]["email"] = {
+        "subject": "Re: Access question",
+        "message_id": " <Inbound-1@Mail.Example> ",
+        "in_reply_to": "<Ours-9@desk.example>",
+        "references": "<first@mail.example>  <ours-9@desk.example>",
+        "to": ["Support <support@ACTEXLEARNING.com>"],
+        "cc": "Manager <paula@actexlearning.com>",
+    }
+
+    parsed = parse_message_created(value)
+
+    assert parsed.rfc822_message_id == "inbound-1@mail.example"
+    assert parsed.in_reply_to == "ours-9@desk.example"
+    assert parsed.references == ["first@mail.example", "ours-9@desk.example"]
+    assert parsed.to_emails == ["support@actexlearning.com", "paula@actexlearning.com"]
+
+
+def test_missing_threading_headers_are_empty_not_fatal():
+    parsed = parse_message_created(payload())
+
+    assert parsed.rfc822_message_id == ""
+    assert parsed.in_reply_to == ""
+    assert parsed.references == []
+    assert parsed.should_process
+
+
+def test_reply_and_forward_prefixes_collapse_to_one_subject_key():
+    from parser import normalize_subject
+
+    assert normalize_subject("Re: Fwd: Access question") == "access question"
+    assert normalize_subject("RE: [EXTERNAL] Access question") == "access question"
+    assert normalize_subject("  Access   question ") == "access question"
+
+
+def test_api_fetched_message_carries_the_same_threading_headers():
+    from parser import newest_customer_message
+
+    message = newest_customer_message(
+        [{
+            "id": 51,
+            "message_type": "incoming",
+            "private": False,
+            "content": "Still stuck.",
+            "content_attributes": {"email": {
+                "subject": "Re: Access question",
+                "message_id": "<later@mail.example>",
+                "in_reply_to": "<ours-9@desk.example>",
+            }},
+            "sender": {"email": "person@example.com", "type": "contact"},
+        }],
+        conversation_id=7,
+        account_id=1,
+    )
+
+    assert message.rfc822_message_id == "later@mail.example"
+    assert message.in_reply_to == "ours-9@desk.example"

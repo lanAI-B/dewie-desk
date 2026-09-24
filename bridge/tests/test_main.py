@@ -80,7 +80,7 @@ def test_label_drafts_despite_policy_decline_and_shows_doubts(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(DecisionAction.TRIAGE, "low_confidence", classification),
+        lambda value, **_: DraftDecision(DecisionAction.TRIAGE, "low_confidence", classification),
     )
 
     def draft_reply(request):
@@ -107,7 +107,7 @@ def test_confident_draft_carries_no_doubts(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+        lambda value, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
     )
     monkeypatch.setattr(
         "dewie_brain.drafter.draft_reply",
@@ -128,7 +128,7 @@ def test_unusable_draft_says_so_instead_of_going_silent(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(DecisionAction.SKIP, "system_sender_localpart"),
+        lambda value, **_: DraftDecision(DecisionAction.SKIP, "system_sender_localpart"),
     )
     monkeypatch.setattr(
         "dewie_brain.drafter.draft_reply",
@@ -146,7 +146,7 @@ def test_shadow_draft_never_imports_drafter(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+        lambda value, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
     )
     monkeypatch.setitem(sys.modules, "dewie_brain.drafter", None)
 
@@ -167,7 +167,7 @@ def test_shadow_metrics_capture_policy_evidence_without_drafting(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(
+        lambda value, **_: DraftDecision(
             DecisionAction.DRAFT,
             "drafted",
             classification=classification,
@@ -200,7 +200,7 @@ def test_draft_request_includes_extracted_attachment_text(monkeypatch):
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda message: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+        lambda message, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
     )
     monkeypatch.setattr(main, "extract_attachment_text", lambda values, logger: "PDF text")
 
