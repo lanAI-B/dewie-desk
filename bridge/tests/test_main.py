@@ -51,15 +51,94 @@ def test_classifier_failure_triages_instead_of_drafting(monkeypatch):
     assert decision.reason_code == "classifier_failed"
 
 
-def test_triage_path_never_imports_drafter(monkeypatch):
+class NoteClient:
+    def __init__(self):
+        self.notes = []
+
+    def post_private_note(self, conversation_id, content):
+        self.notes.append((conversation_id, content))
+        return SimpleNamespace(ok=True, status_code=200, detail="posted")
+
+
+def test_label_drafts_despite_policy_decline_and_shows_doubts(monkeypatch):
+    # The label is Lana's explicit request: a policy decline becomes a draft
+    # whose note opens with the reasons the classifier doubted the message.
+    classification = Classification(
+        actor=Actor.CUSTOMER,
+        intent=Intent.ACCESS_SUPPORT,
+        actor_confidence=0.62,
+        intent_confidence=0.70,
+        provider="fake",
+        model="classifier-test",
+    )
+    client = NoteClient()
+    captured = {}
+    monkeypatch.setenv("BRIDGE_SHADOW_MODE", "false")
+    monkeypatch.setenv("BRIDGE_DRY_RUN", "false")
+    monkeypatch.setattr(main, "order_capture_enabled", lambda: False)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
     monkeypatch.setattr(
         main,
         "_decision",
-        lambda value: DraftDecision(DecisionAction.TRIAGE, "low_confidence"),
+        lambda value: DraftDecision(DecisionAction.TRIAGE, "low_confidence", classification),
     )
-    monkeypatch.setitem(sys.modules, "dewie_brain.drafter", None)
 
-    main.process_message(message())
+    def draft_reply(request):
+        captured["category"] = request.category
+        return SimpleNamespace(unusable_reason=None, draft_body="Draft", via_template=None, model="m")
+
+    monkeypatch.setattr("dewie_brain.drafter.draft_reply", draft_reply)
+
+    assert main.process_message(message()) is True
+    assert captured["category"] == "GENERAL"
+    [(_, note)] = client.notes
+    assert note.startswith("**Dewie's doubts**")
+    assert "`low_confidence`" in note
+    assert "0.62/0.70" in note
+    assert "**Dewie draft**" in note and note.endswith("Draft")
+
+
+def test_confident_draft_carries_no_doubts(monkeypatch):
+    client = NoteClient()
+    monkeypatch.setenv("BRIDGE_SHADOW_MODE", "false")
+    monkeypatch.setenv("BRIDGE_DRY_RUN", "false")
+    monkeypatch.setattr(main, "order_capture_enabled", lambda: False)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(
+        main,
+        "_decision",
+        lambda value: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+    )
+    monkeypatch.setattr(
+        "dewie_brain.drafter.draft_reply",
+        lambda request: SimpleNamespace(unusable_reason=None, draft_body="Draft", via_template=None, model="m"),
+    )
+
+    assert main.process_message(message()) is True
+    [(_, note)] = client.notes
+    assert note.startswith("**Dewie draft**")
+
+
+def test_unusable_draft_says_so_instead_of_going_silent(monkeypatch):
+    client = NoteClient()
+    monkeypatch.setenv("BRIDGE_SHADOW_MODE", "false")
+    monkeypatch.setenv("BRIDGE_DRY_RUN", "false")
+    monkeypatch.setattr(main, "order_capture_enabled", lambda: False)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(
+        main,
+        "_decision",
+        lambda value: DraftDecision(DecisionAction.SKIP, "system_sender_localpart"),
+    )
+    monkeypatch.setattr(
+        "dewie_brain.drafter.draft_reply",
+        lambda request: SimpleNamespace(unusable_reason="no customer question", draft_body=""),
+    )
+
+    # False keeps the claim released, so the label can be re-applied to retry.
+    assert main.process_message(message()) is False
+    [(_, note)] = client.notes
+    assert note.startswith("**Dewie could not draft this** (no customer question)")
 
 
 def test_shadow_draft_never_imports_drafter(monkeypatch):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -197,7 +198,60 @@ def _decision(message: ParsedMessage):
     )
 
 
-def _private_note(result, decision) -> str:
+# Plain words for why the policy would not have drafted on its own. A label is
+# Lana's explicit request, so these become doubts shown on the note, not a refusal.
+_DOUBT_TEXT = {
+    "system_sender_localpart": "the sender address looks automated (no-reply, bounce, etc.)",
+    "system_sender_classified": "the classifier thinks an automated system sent this",
+    "classifier_failed": "the classifier did not return a usable reading",
+    "notification_only": "it reads as a notification, not a request",
+    "unknown_actor": "the classifier could not tell who sent it",
+    "unknown_intent": "the classifier could not tell what is being asked",
+    "low_confidence": "the classifier was unsure of its reading",
+    "not_actionable": "it does not look like it needs a reply",
+    "internal_not_handoff": "it is internal mail, not a forwarded customer request",
+}
+
+
+def _doubts(declined) -> str:
+    """Why the policy alone would not have drafted, for the top of the note."""
+    reason = declined.reason_code
+    lines = [f"- {_DOUBT_TEXT.get(reason, reason)} (`{reason}`)"]
+    classification = declined.classification
+    if classification:
+        lines.append(
+            f"- read as: {classification.actor.value} x {classification.intent.value}, "
+            f"confidence {classification.actor_confidence:.2f}/{classification.intent_confidence:.2f}"
+        )
+    return "**Dewie's doubts** (drafted anyway because you applied the label)\n" + "\n".join(lines)
+
+
+def _labelled_decision(message: ParsedMessage, decision):
+    """The label is an explicit request: a policy decline becomes a draft with doubts."""
+    if decision.should_draft:
+        return decision, None
+    from dewie_brain.desk import DecisionAction, legacy_draft_category
+
+    classification = decision.classification
+    category = (
+        legacy_draft_category(classification.intent, f"{message.subject}\n{message.body}")
+        if classification else "GENERAL"
+    )
+    drafted = dataclasses.replace(decision, action=DecisionAction.DRAFT, category=category)
+    return drafted, _doubts(decision)
+
+
+def _post_failure_note(message: ParsedMessage, why: str) -> None:
+    """Tell whoever applied the label that nothing came of it, and why."""
+    if dry_run():
+        return
+    chatwoot_client().post_private_note(
+        int(message.conversation_id),
+        f"**Dewie could not draft this** ({why}). Remove and re-add the label to retry.",
+    )
+
+
+def _private_note(result, decision, doubts: str | None = None) -> str:
     classification = decision.classification
     evidence = ""
     if classification:
@@ -206,8 +260,9 @@ def _private_note(result, decision) -> str:
             f"confidence {classification.actor_confidence:.2f}/{classification.intent_confidence:.2f}; "
             f"{classification.provider or 'unknown'}/{classification.model or 'unknown'}"
         )
+    header = f"{doubts}\n\n" if doubts else ""
     return (
-        f"**Dewie draft** (private; {result.via_template or result.model or 'model'}{evidence})\n\n"
+        f"{header}**Dewie draft** (private; {result.via_template or result.model or 'model'}{evidence})\n\n"
         f"{result.draft_body}"
     )
 
@@ -308,16 +363,15 @@ def process_message(message: ParsedMessage) -> bool:
         _increment(f"intent_confidence_{_confidence_band(classification.intent_confidence)}")
         _increment(f"classifier_provider_{classification.provider or 'unknown'}")
 
-    if not decision.should_draft:
-        _increment("drafter_calls_avoided")
+    decision, doubts = _labelled_decision(message, decision)
+    if doubts:
+        _increment("label_overrides")
         log.info(
-            "desk decision=%s reason=%s conversation=%s message=%s",
-            decision.action.value,
+            "desk label override reason=%s conversation=%s message=%s",
             decision.reason_code,
             message.conversation_id,
             message.message_id,
         )
-        return False
     if shadow_mode():
         _increment("drafter_calls_avoided")
         _increment("drafter_calls_avoided_shadow")
@@ -356,16 +410,18 @@ def process_message(message: ParsedMessage) -> bool:
             message.message_id,
             type(exc).__name__,
         )
+        _post_failure_note(message, f"the drafter raised {type(exc).__name__}")
         return False
     if result.unusable_reason or not result.draft_body:
         _increment("draft_unusable")
+        _post_failure_note(message, result.unusable_reason or "the drafter returned an empty draft")
         return False
     if dry_run():
         _increment("notes_avoided_dry_run")
         return False
 
     posted = chatwoot_client().post_private_note(
-        int(message.conversation_id), _private_note(result, decision)
+        int(message.conversation_id), _private_note(result, decision, doubts)
     )
     if posted.ok:
         _increment("private_notes_posted")
