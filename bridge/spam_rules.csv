@@ -68,3 +68,4 @@ spam,@rescue.wantsome.co.uk,,contains,Lana 2026-09-23 (ship-to-Australia payment
 allow,vmgw@dsci-net.com,,contains,Lana 2026-09-24: voicemails from the phone system are customer calls
 allow,mailer-daemon@googlemail.com,,contains,Lana 2026-09-24: bounces of our own sends must stay visible
 allow,donotreply@access.usbank.com,,contains,Lana 2026-09-24: Securian (Minnesota Life) payments - forward to Sue per KB
+allow,@amazon.com,,contains,Lana 2026-09-28: Amazon seller/order/buyer notices stay visible (account-health risk); automate later
