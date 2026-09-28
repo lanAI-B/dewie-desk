@@ -6,3 +6,6 @@ __pycache__/
 data/
 logs/
 .venv.broken-*/
+
+# Wren's Chatwoot API token (attended sessions)
+.env.wren
