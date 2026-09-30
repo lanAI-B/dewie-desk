@@ -62,6 +62,7 @@ def sent_bytes(
     subject="Re: Access question",
     to="person@example.com",
     body="Your code is reset, please try again.",
+    extra_headers=(),
 ):
     headers = [
         "From: Paula Reyes <paula@actexlearning.com>",
@@ -74,6 +75,7 @@ def sent_bytes(
         headers.append(f"In-Reply-To: {in_reply_to}")
     if references:
         headers.append(f"References: {references}")
+    headers.extend(extra_headers)
     headers.append("Content-Type: text/plain; charset=utf-8")
     return ("\r\n".join(headers) + "\r\n\r\n" + body).encode("utf-8")
 
@@ -337,3 +339,41 @@ def test_a_message_without_raw_source_still_normalizes(store):
     assert reply.in_reply_to == "inbound-1@mail.example"
     assert reply.to_emails == ("person@example.com",)
     assert sent_sync.note_claim_key(reply) == "sent-note:msgid:header-only@outlook.example"
+
+
+def test_a_copy_the_bridge_filed_from_chatwoot_is_never_posted_back(store):
+    """Loop guard for feature/desk-sent-copy: that reply is already in Chatwoot."""
+    store.record_inbound(parse_message_created(inbound_payload()))
+    copy = sent_sync.parse_sent_email(sent_bytes(
+        message_id="<conversation/abc/messages/501@mail.example>",
+        extra_headers=("X-Dewie-Desk-Copy: 501",),
+    ))
+    human = sent_sync.parse_sent_email(sent_bytes())
+    client = FakeClient()
+
+    assert copy.desk_copy == "501"
+    assert human.desk_copy == ""
+    report = sent_sync.sync_replies([copy, human], store=store, client=client, dry_run=False)
+
+    assert report.counts["desk_copy_skipped"] == 1
+    assert report.counts["private_notes_posted"] == 1
+    assert [call[0] for call in client.calls] == ["post_private_note"]
+    assert "Your code is reset" in client.calls[0][2]
+    # Skipped before any claim: nothing is recorded for the copy.
+    assert store.claim(sent_sync.note_claim_key(copy)) is True
+
+
+def test_the_loop_guard_also_reads_header_only_messages():
+    class HeaderOnly:
+        uid = "78"
+        subject = "Re: Access question"
+        from_ = "orders@actuarialbookstore.com"
+        to = ("person@example.com",)
+        date = None
+        text = "Sent from Chatwoot."
+        headers = {
+            "message-id": ("<conversation/abc/messages/502@mail.example>",),
+            "x-dewie-desk-copy": ("502",),
+        }
+
+    assert sent_sync.from_mail_message(HeaderOnly()).desk_copy == "502"
