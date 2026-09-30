@@ -14,12 +14,20 @@ import requests
 # `from dotenv import load_dotenv` then binds this no-op.
 dotenv.load_dotenv = lambda *args, **kwargs: False
 
-def _dewieops_root() -> Path:
+REQUIRE_DEWIEOPS = os.environ.get("REQUIRE_DEWIEOPS", "").strip() == "1"
+
+
+def _dewieops_root() -> Path | None:
     """The DewieOps checkout under test: env override first, sibling otherwise.
 
     A feature worktree is not a sibling of ``DewieOps``, and the desk decision
     contract lives on a DewieOps feature branch rather than on ``main``, so the
     checkout that supplies ``dewie_brain`` has to be selectable.
+
+    Without a checkout this returns ``None`` and only the test modules that
+    call ``require_dewieops()`` are skipped. ``REQUIRE_DEWIEOPS=1`` (office box,
+    CI with both repos) restores the hard failure, so a lost checkout can never
+    pass as a green run there.
     """
     configured = (os.environ.get("DEWIEOPS_PATH") or "").strip()
     if configured:
@@ -29,15 +37,42 @@ def _dewieops_root() -> Path:
         return root
     root = Path(__file__).resolve().parents[3] / "DewieOps"
     if not root.is_dir():
-        raise RuntimeError(
-            f"Sibling DewieOps checkout not found at {root}; set DEWIEOPS_PATH"
-        )
+        if REQUIRE_DEWIEOPS:
+            raise RuntimeError(
+                f"Sibling DewieOps checkout not found at {root}; set DEWIEOPS_PATH"
+            )
+        return None
     return root
 
 
 DEWIEOPS = _dewieops_root()
-if str(DEWIEOPS) not in sys.path:
+if DEWIEOPS is not None and str(DEWIEOPS) not in sys.path:
     sys.path.insert(0, str(DEWIEOPS))
+
+DEWIEOPS_SKIP_REASON = (
+    "needs a DewieOps checkout (dewie_brain): set DEWIEOPS_PATH or clone it as a "
+    "sibling ../DewieOps; REQUIRE_DEWIEOPS=1 turns this skip into an error"
+)
+
+
+def require_dewieops() -> None:
+    """Skip the calling test module when no DewieOps checkout is available.
+
+    Call it at the top of the module, before anything imports ``dewie_brain``.
+    The decision rests on the checkout being present, not on ``dewie_brain``
+    importing: with a checkout, a broken import still fails loudly rather than
+    skipping (which ``pytest.importorskip`` would do).
+    """
+    __tracebackhide__ = True  # report the skip against the test module, not here
+    if DEWIEOPS is None:
+        pytest.skip(DEWIEOPS_SKIP_REASON, allow_module_level=True)
+
+
+@pytest.fixture
+def dewieops():
+    """The same gate for one test in a module that otherwise runs without DewieOps."""
+    require_dewieops()
+    return DEWIEOPS
 
 
 LIVE_SECRETS = (

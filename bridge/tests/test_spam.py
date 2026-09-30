@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 import main
 import spam
 from chatwoot import ChatwootClient, LabelResult, PostResult
-from dewie_brain.desk import Actor, Classification, Intent
 from parser import ParsedMessage
 from tests.test_webhook_endpoint import Store, payload, signed_post
 
@@ -52,8 +51,10 @@ def audit_lines():
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def classification(actor=Actor.SYSTEM, intent=Intent.NOTIFY, conf=0.95):
-    return Classification(actor, intent, conf, conf, "fake", "fake")
+def classification(actor="SYSTEM", intent="NOTIFY", conf=0.95):
+    from dewie_brain.desk import Actor, Classification, Intent
+
+    return Classification(getattr(Actor, actor), getattr(Intent, intent), conf, conf, "fake", "fake")
 
 
 # ── rules ────────────────────────────────────────────────────────────────────
@@ -141,13 +142,14 @@ def test_classifier_not_called_when_a_rule_decided(monkeypatch):
     assert not spam.evaluate(message("a@actexlearning.com"), classify=forbidden).spam
 
 
-@pytest.mark.parametrize("result,expected", [
-    (classification(), True),
-    (classification(conf=0.8), False),
-    (classification(actor=Actor.CUSTOMER), False),
-    (classification(intent=Intent.ORDER_STATUS), False),
+@pytest.mark.parametrize("overrides,expected", [
+    ({}, True),
+    ({"conf": 0.8}, False),
+    ({"actor": "CUSTOMER"}, False),
+    ({"intent": "ORDER_STATUS"}, False),
 ])
-def test_classifier_only_resolves_confident_system_notifications(monkeypatch, result, expected):
+def test_classifier_only_resolves_confident_system_notifications(dewieops, monkeypatch, overrides, expected):
+    result = classification(**overrides)
     monkeypatch.setenv("SPAM_CLASSIFIER_ENABLED", "true")
     verdict = spam.evaluate(message("news@vendor.biz", "Weekly digest"), classify=lambda _: result)
     assert verdict.spam is expected
@@ -164,7 +166,7 @@ def test_classifier_failure_never_resolves(monkeypatch):
     assert not verdict.spam and "RuntimeError" in verdict.reason
 
 
-def test_classifier_verdict_vetoed_by_customer_subject(monkeypatch):
+def test_classifier_verdict_vetoed_by_customer_subject(dewieops, monkeypatch):
     monkeypatch.setenv("SPAM_CLASSIFIER_ENABLED", "true")
     verdict = spam.evaluate(message("x@vendor.biz", "Your refund"), classify=lambda _: classification())
     assert not verdict.spam and verdict.stage == "veto"

@@ -1,5 +1,9 @@
 from types import SimpleNamespace
 
+from conftest import require_dewieops
+
+require_dewieops()
+
 import attachments
 from attachments import DownloadedAttachment
 from parser import ParsedAttachment

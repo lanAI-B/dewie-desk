@@ -6,6 +6,10 @@ import re
 
 import pytest
 
+from conftest import require_dewieops
+
+require_dewieops()
+
 import main
 import shadow
 
