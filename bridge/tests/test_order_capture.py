@@ -13,10 +13,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from conftest import DEWIEOPS, require_dewieops
+
+require_dewieops()
+
 import sqlalchemy
 
 import main
-from conftest import DEWIEOPS
 from dewie_brain.desk import DecisionAction, DraftDecision
 from parser import ParsedAttachment, ParsedMessage
 

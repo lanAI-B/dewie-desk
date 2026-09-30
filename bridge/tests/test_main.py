@@ -2,6 +2,10 @@ import sys
 from collections import Counter
 from types import SimpleNamespace
 
+from conftest import require_dewieops
+
+require_dewieops()
+
 import main
 from chatwoot import ConversationResult, LabelResult
 from dewie_brain.desk import Actor, Classification, DecisionAction, DraftDecision, Intent

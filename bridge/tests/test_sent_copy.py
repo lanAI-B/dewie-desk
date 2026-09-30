@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from email import policy
 
 import pytest
-import sqlalchemy
 from fastapi.testclient import TestClient
 
 import main
@@ -414,7 +413,8 @@ def test_unmapped_inbox_touches_no_mailbox_and_claims_nothing(tmp_path):
 
 
 @pytest.fixture
-def memory_engine():
+def memory_engine(dewieops):
+    import sqlalchemy
     from dewie_brain.db.schema import conv_memory
 
     engine = sqlalchemy.create_engine("sqlite://")
@@ -423,6 +423,7 @@ def memory_engine():
 
 
 def test_conv_memory_row_mirrors_the_sent_sync_shape(memory_engine):
+    import sqlalchemy
     from dewie_brain.db.schema import conv_memory
 
     writer = ConvMemoryWriter(memory_engine)
