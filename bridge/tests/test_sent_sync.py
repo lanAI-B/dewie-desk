@@ -250,26 +250,6 @@ def test_html_only_reply_still_yields_readable_text():
     assert "Access restored." in sent_sync.parse_sent_email(raw).body
 
 
-def test_disabled_is_the_default_and_makes_no_transport_call(monkeypatch, store):
-    monkeypatch.delenv("SENT_SYNC_ENABLED", raising=False)
-    client = FakeClient()
-
-    report = sent_sync.run_sent_sync(store=store, client=client)
-
-    assert report.counts["disabled"] == 1
-    assert client.calls == []
-
-
-def test_enabled_without_credentials_reports_instead_of_crashing(monkeypatch, store):
-    monkeypatch.setenv("SENT_SYNC_ENABLED", "true")
-    monkeypatch.setenv("SENT_SYNC_USERNAME", "")
-    monkeypatch.setenv("SENT_SYNC_PASSWORD", "")
-
-    report = sent_sync.run_sent_sync(store=store, client=FakeClient())
-
-    assert report.counts["missing_credentials"] == 1
-
-
 def test_fetch_is_read_only_and_bounded(monkeypatch):
     captured = {}
 
@@ -278,9 +258,12 @@ def test_fetch_is_read_only_and_bounded(monkeypatch):
             captured.update(folder=folder, readonly=readonly)
 
     class FakeMailbox:
-        def __init__(self, host):
-            captured["host"] = host
+        def __init__(self, host, port=993, timeout=None):
+            captured.update(host=host, port=port, timeout=timeout)
             self.folder = FakeFolderManager()
+
+        def __getattr__(self, name):  # move, flag, delete, append, expunge, ...
+            raise AssertionError(f"sent sync must not call mailbox.{name}")
 
         def login(self, username, password, initial_folder="INBOX"):
             captured.update(
@@ -307,12 +290,15 @@ def test_fetch_is_read_only_and_bounded(monkeypatch):
         host="secure.emailsrvr.com",
         username="support@actexlearning.com",
         password="secret",
-        folder="Sent",
+        folder="INBOX.Sent",
+        port=993,
         lookback_days=14,
     )
 
+    assert captured["port"] == 993
+    assert captured["timeout"] == sent_sync.IMAP_TIMEOUT_SECONDS
     assert captured["initial_folder"] is None
-    assert captured["folder"] == "Sent"
+    assert captured["folder"] == "INBOX.Sent"
     assert captured["readonly"] is True
     assert captured["fetch_kwargs"]["mark_seen"] is False
     assert captured["fetch_kwargs"]["limit"] == 200
@@ -395,3 +381,65 @@ def test_an_inline_image_is_never_read_as_the_body():
     reply = sent_sync.parse_sent_email(message.as_bytes())
     assert reply.body == "Hi Sue, the key is on its way."
     assert chr(0) not in sent_sync.format_note(reply)
+
+
+def test_html_only_reply_decodes_entities_and_keeps_line_breaks():
+    raw = (
+        "From: Paula <paula@actexlearning.com>\r\n"
+        "To: person@example.com\r\n"
+        "Subject: Re: Access question\r\n"
+        "Message-ID: <html-2@outlook.example>\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n\r\n"
+        "<html><head><style>p.MsoNormal {margin:0}</style></head><body>"
+        "<div>Hi&nbsp;Sue,</div><p>Your key is&nbsp;reset.<br>Try again&nbsp;now.</p>"
+        "<p>Tom &amp; Jerry &lt;support&gt;</p><!-- signature --></body></html>"
+    ).encode("utf-8")
+
+    body = sent_sync.parse_sent_email(raw).body
+
+    assert body.splitlines() == [
+        "Hi Sue,",
+        "Your key is reset.",
+        "Try again now.",
+        "Tom & Jerry <support>",
+    ]
+    assert "&nbsp;" not in body and "\xa0" not in body
+    assert "MsoNormal" not in body
+
+
+def test_encoded_subject_and_sender_are_decoded():
+    reply = sent_sync.parse_sent_email(sent_bytes(
+        subject="=?utf-8?Q?Re=3A_Caf=C3=A9_access_question?=",
+    ).replace(
+        b"From: Paula Reyes <paula@actexlearning.com>",
+        b"From: =?utf-8?Q?Paula_Rey=C3=A9s?= <paula@actexlearning.com>",
+    ))
+
+    assert reply.subject == "Re: Café access question"
+    assert reply.from_name == "Paula Reyés"
+    assert reply.from_email == "paula@actexlearning.com"
+    assert sent_sync.format_note(reply).startswith("[sent by Paula Reyés via Outlook")
+
+
+def test_an_encoded_subject_matches_by_subject_and_recipient(store):
+    inbound = inbound_payload()
+    inbound["content_attributes"]["email"]["subject"] = "Café access question"
+    store.record_inbound(parse_message_created(inbound))
+    reply = sent_sync.parse_sent_email(sent_bytes(
+        in_reply_to="",
+        references="",
+        subject="=?utf-8?B?" + __import__("base64").b64encode(
+            "RE: Café access question".encode("utf-8")
+        ).decode() + "?=",
+    ))
+    client = FakeClient()
+
+    report = sent_sync.sync_replies([reply], store=store, client=client, dry_run=False)
+
+    assert report.counts["resolved_subject_recipient"] == 1
+    assert [call[:2] for call in client.calls] == [("post_private_note", 7)]
+
+
+def test_a_malformed_encoded_word_is_kept_not_fatal():
+    assert sent_sync.decode_header_text("=?bogus-charset?Q?abc?=") != ""
+    assert sent_sync.decode_header_text(None) == ""

@@ -9,6 +9,7 @@ import logging
 import os
 import threading
 from collections import Counter
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -36,13 +37,24 @@ from state import DedupStore
 import conversations
 import outbound
 import spam
-from sent_sync import sent_sync_status
+import sent_sync
 import webhook_auth
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("dewie-desk-bridge")
 
-app = FastAPI(title="dewie-desk-bridge")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start the Sent-folder sync loop; it starts only when SENT_SYNC_ENABLED is true."""
+    task, stop = sent_sync.start_loop(_sent_sync_runner)
+    try:
+        yield
+    finally:
+        await sent_sync.stop_loop(task, stop)
+
+
+app = FastAPI(title="dewie-desk-bridge", lifespan=lifespan)
 
 _client: ChatwootClient | None = None
 _runtime = None
@@ -124,6 +136,14 @@ def conv_memory_writer() -> ConvMemoryWriter:
     if _memory_writer is None:
         _memory_writer = ConvMemoryWriter()
     return _memory_writer
+
+
+def run_sent_sync_pass() -> sent_sync.PassReport:
+    """One periodic pass over every Sent folder. BRIDGE_DRY_RUN decides posting."""
+    return sent_sync.run_sent_sync(store=dedup_store(), client=chatwoot_client())
+
+
+_sent_sync_runner = sent_sync.SentSyncRunner(lambda: run_sent_sync_pass())
 
 
 def process_sent_message(sent: sent_copy.SentMessage) -> None:
@@ -573,7 +593,7 @@ def health() -> dict:
         "outbound_auth": outbound.configuration_problem() or "configured",
         "spam_autoresolve": spam.status(),
         "chatwoot_configured": bool(os.environ.get("CHATWOOT_API_TOKEN", "").strip()),
-        "sent_sync": sent_sync_status(),
+        "sent_sync": sent_sync.sent_sync_status(_sent_sync_runner),
         "counts": counts,
     }
 

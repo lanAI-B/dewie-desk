@@ -112,12 +112,18 @@ Settings → Labels once so it shows with a colour; Chatwoot tags the
 conversation either way.
 5. **Sent-folder continuity** (optional, off by default). Chatwoot's email
    channel reads INBOX only, so replies sent from Outlook are invisible to it
-   and a draft can contradict what CS already said. Set the `SENT_SYNC_*`
-   variables and run a pass by hand:
+   and a draft can contradict what CS already said. It reads every mailbox in
+   `SENT_COPY_INBOXES`, with the `SENT_COPY_<LABEL>_*` credentials and folder.
+   With `SENT_SYNC_ENABLED=true` the bridge runs a pass every
+   `SENT_SYNC_INTERVAL_SECONDS` (default 300) over the last
+   `SENT_SYNC_LOOKBACK_DAYS` (default 3); `BRIDGE_DRY_RUN` decides whether those
+   passes post. `/health` shows each mailbox's readiness and the last pass.
+   A pass by hand (does not need `SENT_SYNC_ENABLED`):
    ```
    cd bridge
-   python sent_sync.py          # dry run: resolve and count, post nothing
-   python sent_sync.py --post   # post the private notes
+   python sent_sync.py                            # dry run: resolve and count, post nothing
+   python sent_sync.py --post                     # post the private notes
+   python sent_sync.py --mailbox abs --lookback-days 14
    ```
    The folder is opened read-only and fetched with `mark_seen=False`, each
    reply is posted as a **private note** only, and one sent Message-ID can post
