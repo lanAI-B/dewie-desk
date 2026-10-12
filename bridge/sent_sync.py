@@ -125,7 +125,9 @@ def _body_text(message) -> str:
     html: list[str] = []
     parts = message.walk() if message.is_multipart() else [message]
     for part in parts:
-        if part.get_content_maintype() == "multipart":
+        # Only text parts are a body. An inline image (a signature logo, a pasted
+        # screenshot) is not an attachment by disposition and must not be read as one.
+        if part.get_content_maintype() != "text":
             continue
         disposition = str(part.get("Content-Disposition") or "").lower()
         if disposition.startswith("attachment"):

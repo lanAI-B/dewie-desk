@@ -377,3 +377,21 @@ def test_the_loop_guard_also_reads_header_only_messages():
         }
 
     assert sent_sync.from_mail_message(HeaderOnly()).desk_copy == "502"
+
+
+def test_an_inline_image_is_never_read_as_the_body():
+    from email.mime.image import MIMEImage
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    message = MIMEMultipart("related")
+    message["Message-ID"] = "<SENT-IMG@Outlook.Example>"
+    message["From"] = "support@actexlearning.com"
+    message["To"] = "person@example.com"
+    png = bytes([0x89]) + b"PNG\r\n" + bytes([0x1A, 0x0A, 0, 0, 0, 0x0D]) + b"IHDR"
+    message.attach(MIMEImage(png, "png"))  # inline: no Content-Disposition, like Outlook's logo
+    message.attach(MIMEText("Hi Sue, the key is on its way.", "plain"))
+
+    reply = sent_sync.parse_sent_email(message.as_bytes())
+    assert reply.body == "Hi Sue, the key is on its way."
+    assert chr(0) not in sent_sync.format_note(reply)
