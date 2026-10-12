@@ -52,8 +52,8 @@ The brain never imports Chatwoot; the bridge never drafts. That's the whole desi
    then returns the reply text + metadata.
 6. The bridge posts that as a **private note** and removes `dewie-draft`. A later
    customer reply requires another human label action. With shadow/dry-run enabled,
-   no note is posted and the command is not reported as consumed. **Sending the
-   reply is always a human click in Chatwoot.**
+   no note is posted and the command is not reported as consumed. **A human decides
+   every send: a click in Chatwoot, or Lana telling Wren to send.**
 
 ## Operating it
 

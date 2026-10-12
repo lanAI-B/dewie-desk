@@ -87,7 +87,7 @@ until the board stays sane on its own.
    Incoming messages are recorded but do not classify or draft automatically. Add
    the `dewie-draft` label to request one draft for the newest customer message.
    After a private draft note is posted, the bridge removes the label; a later
-   customer reply requires a fresh label action. SEND stays a human click.
+   customer reply requires a fresh label action. A human decides every send: a click in Chatwoot, or Lana telling Wren to send.
 
 ## Spam auto-resolve
 
