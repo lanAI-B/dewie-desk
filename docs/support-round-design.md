@@ -39,3 +39,26 @@ Decisions are recorded here as Lana and Andrew make them. Open items at the bott
 ## Open
 
 - The label list itself (first analyst session).
+
+## Instruction check (Andrew, 2026-10-12)
+
+What the existing docs say against this design. Fold the wording fixes into Wren's
+instruction pass (carry list, 10-10).
+
+1. **"SEND is a human click"** appears in `README.md:75`, `HOW_IT_WORKS.md:54`, DewieBrain
+   `docs/email_workflow_redesign.md:61` and `wiki/initiatives/mail-authorship-model.md:79`.
+   The real invariant is that a human decides each customer send. Lana telling Wren to
+   send satisfies it. Reword to "a human decides the send (a click, or Lana's word to
+   Wren)" so a careful reader doesn't refuse on the old wording.
+2. **Sent replies vs IMAP:** DewieBrain `wiki/automation/chatwoot-trial.md`, "Known gap".
+   A reply sent from Chatwoot that never lands in an IMAP folder looks unanswered to
+   anything reading IMAP, which may then answer it again. Check before Wren's first send
+   whether this is still true now that the desk owns intake.
+3. **Bulk label writes:** the weekend `/chatwoot` rules (office box) say bulk writes need
+   CSAT off and no `conversation_updated` automation rule, and never bulk-add
+   `dewie-draft`. Bulk relabels can fire customer surveys or automations, and bulk
+   `dewie-draft` fires a draft per conversation. Rounds label one conversation at a time,
+   and analyst-session bulk relabels go through those preconditions.
+4. **Consistent:** `wren` is already a work-item role (`work_items_admin.ROLES`); her own
+   agent account gives the structural provenance `mail-authorship-model.md` asks for;
+   notes in Chatwoot plus work items in Brain passes the "Ops never depends on Brain" test.
