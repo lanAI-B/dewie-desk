@@ -113,3 +113,4 @@ replied from where that day.
 | date | new | fresh | unthreaded (parent unknown) | parent known, new conv | outgoing with ID | notes |
 |---|---|---|---|---|---|---|
 | 10-16 | 430 | 342 | 83 (rackspace 41, workstations ~20) | 5 | 37 / 331 | baseline. Lana on the desk only; team still on Outlook |
+| 10-16 eve | 423 | 337 | 81 | 5 | 41 / 345 | first day with Lana desk-only; window slid (10-02 dropped off). Script fix: section 3 times were shown 8h off (timestamps are UTC without zone); now NY local |

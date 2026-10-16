@@ -45,7 +45,7 @@ with firsts as (
   where c.created_at > now() - (:'days' || ' days')::interval and c.inbox_id in (1, 3)
   order by c.id, m.created_at)
 select f.conv, p.conversation_id as parent_conv, pc.status as parent_status_now, pc.inbox_id,
-  to_char(f.created_at at time zone 'America/New_York', 'MM-DD HH24:MI') as child_created
+  to_char((f.created_at at time zone 'UTC') at time zone 'America/New_York', 'MM-DD HH24:MI') as child_created
 from firsts f
 join messages p on p.source_id in (f.irt, trim(both '<>' from f.irt))
 join conversations pc on pc.id = p.conversation_id
