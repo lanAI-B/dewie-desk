@@ -229,14 +229,15 @@ class ChatwootClient:
             raise ChatwootError("created_without_conversation_id")
         return conversation_id
 
-    def get_conversation(self, conversation_id: int) -> ConversationResult:
-        """Fetch the current message page and metadata for one conversation."""
+    def get_conversation(self, conversation_id: int, before: int | None = None) -> ConversationResult:
+        """Fetch the newest message page (or the page before ``before``) and metadata."""
         if not conversation_id:
             return ConversationResult(False, detail="missing_conversation_id")
         try:
             response = requests.get(
                 self._url(f"/conversations/{conversation_id}/messages"),
                 headers=self._headers,
+                params={"before": before} if before else None,
                 timeout=self.timeout,
             )
         except requests.RequestException as exc:

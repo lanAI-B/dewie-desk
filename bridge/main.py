@@ -27,6 +27,7 @@ from chatwoot import ChatwootClient
 from conv_memory_sync import ConvMemoryWriter
 import sent_copy
 from attachments import extract_attachment_text
+from thread import DraftThread, build_draft_thread, fetch_all_messages
 from parser import (
     ParsedMessage,
     draft_label_added,
@@ -166,11 +167,13 @@ def _command_key(payload: dict) -> str:
     return f"conversation:{conversation_id}:label-add:{hashlib.sha256(canonical).hexdigest()}"
 
 
-def _draft_action_key(message: ParsedMessage) -> str:
-    return (
+def _draft_action_key(message: ParsedMessage, newest_note_id: int | None = None) -> str:
+    """One draft per customer message, and one more per team note written after it."""
+    key = (
         f"conversation:{message.conversation_id or 0}:"
         f"message:{message.message_id or 0}:action:draft"
     )
+    return f"{key}:note:{newest_note_id}" if newest_note_id else key
 
 
 def _decision(message: ParsedMessage, *, classify=None):
@@ -386,7 +389,19 @@ def _report_capture(message: ParsedMessage, result) -> bool:
     return False
 
 
-def process_message(message: ParsedMessage, *, classify=None) -> bool:
+def _thread_fields(request_type, thread: DraftThread) -> dict:
+    """The thread fields this DewieOps checkout's DraftRequest accepts.
+
+    The bridge runs whatever DewieOps the checkout holds, so the two deploy
+    independently; an older drafter simply drafts without the thread.
+    """
+    fields = {f.name for f in dataclasses.fields(request_type)}
+    wanted = {"thread": thread.thread, "team_notes": thread.team_notes}
+    return {name: value for name, value in wanted.items() if name in fields and value}
+
+
+def process_message(message: ParsedMessage, *, classify=None,
+                    thread: DraftThread | None = None) -> bool:
     """Run one requested draft action; true means a private note was posted."""
     decision = _decision(message, classify=classify)
     _increment(f"decision_{decision.action.value}")
@@ -419,7 +434,8 @@ def process_message(message: ParsedMessage, *, classify=None) -> bool:
         return False
 
     attachment_text = None
-    if order_capture_enabled():
+    thread = thread or DraftThread()
+    if order_capture_enabled() and not thread.team_notes:
         attachment_text = extract_attachment_text(message.attachments, logger=log)
         captured = _capture_order(message, decision, attachment_text)
         if captured is not None:
@@ -437,6 +453,7 @@ def process_message(message: ParsedMessage, *, classify=None) -> bool:
             subject=message.subject,
             body=message.body,
             image_text=attachment_text,
+            **_thread_fields(DraftRequest, thread),
         ))
     except Exception as exc:
         _increment("draft_failed")
@@ -502,14 +519,27 @@ def process_label_command(
         _increment("draft_command_no_customer_message")
         return
 
+    try:
+        messages = fetch_all_messages(chatwoot_client(), conversation_id, conversation.messages)
+        thread = build_draft_thread(messages, int(message.message_id), through_message_id)
+    except Exception:
+        # The thread makes the draft better; its absence must never block one.
+        log.exception("thread build failed conversation=%s", conversation_id)
+        _increment("thread_build_failed")
+        thread = DraftThread()
+    if thread.thread:
+        _increment("drafts_with_thread")
+    if thread.team_notes:
+        _increment("drafts_with_team_notes")
+
     dedup_store().record_inbound(message)
-    action_key = _draft_action_key(message)
+    action_key = _draft_action_key(message, thread.newest_note_id)
     if not dedup_store().claim(action_key):
         _increment("duplicate_draft_action")
         return
 
     _increment("draft_commands")
-    if not process_message(message):
+    if not process_message(message, thread=thread):
         dedup_store().release(action_key)
         return
 

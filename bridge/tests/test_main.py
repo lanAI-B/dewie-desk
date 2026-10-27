@@ -259,7 +259,9 @@ class CommandClient:
         self.remove_ok = remove_ok
         self.removed = []
 
-    def get_conversation(self, conversation_id):
+    def get_conversation(self, conversation_id, before=None):
+        if before:
+            return ConversationResult(True, (), {}, 200, "fetched")
         return ConversationResult(
             True,
             tuple(self.messages),
@@ -282,7 +284,7 @@ def test_relabeling_same_inbound_does_not_redraft(monkeypatch):
     drafted = []
     monkeypatch.setattr(main, "dedup_store", lambda: store)
     monkeypatch.setattr(main, "chatwoot_client", lambda: client)
-    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+    monkeypatch.setattr(main, "process_message", lambda value, **_: drafted.append(value.message_id) or True)
 
     main.process_label_command(7, 1, 42)
     main.process_label_command(7, 1, 42)
@@ -298,7 +300,7 @@ def test_two_successive_customer_messages_each_require_and_receive_fresh_command
     drafted = []
     monkeypatch.setattr(main, "dedup_store", lambda: store)
     monkeypatch.setattr(main, "chatwoot_client", lambda: client)
-    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+    monkeypatch.setattr(main, "process_message", lambda value, **_: drafted.append(value.message_id) or True)
 
     main.process_label_command(7, 1, 42)
     client.messages.append(api_message(43, "Second"))
@@ -317,7 +319,7 @@ def test_failed_draft_releases_action_for_a_fresh_human_command(monkeypatch):
     client = CommandClient([api_message(42, "First")])
     monkeypatch.setattr(main, "dedup_store", lambda: store)
     monkeypatch.setattr(main, "chatwoot_client", lambda: client)
-    monkeypatch.setattr(main, "process_message", lambda value: False)
+    monkeypatch.setattr(main, "process_message", lambda value, **_: False)
 
     main.process_label_command(7, 1, 42)
 
@@ -332,7 +334,7 @@ def test_posted_draft_stays_deduplicated_when_label_removal_fails(monkeypatch):
     drafted = []
     monkeypatch.setattr(main, "dedup_store", lambda: store)
     monkeypatch.setattr(main, "chatwoot_client", lambda: client)
-    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+    monkeypatch.setattr(main, "process_message", lambda value, **_: drafted.append(value.message_id) or True)
 
     main.process_label_command(7, 1, 42)
     main.process_label_command(7, 1, 42)
@@ -347,8 +349,36 @@ def test_later_reply_cannot_ride_an_older_label_command(monkeypatch):
     drafted = []
     monkeypatch.setattr(main, "dedup_store", lambda: store)
     monkeypatch.setattr(main, "chatwoot_client", lambda: client)
-    monkeypatch.setattr(main, "process_message", lambda value: drafted.append(value.message_id) or True)
+    monkeypatch.setattr(main, "process_message", lambda value, **_: drafted.append(value.message_id) or True)
 
     main.process_label_command(7, 1, 42)
 
     assert drafted == [42]
+
+
+def _note(message_id, content, name="Lana"):
+    return {"id": message_id, "message_type": 1, "private": True, "content": content,
+            "sender": {"type": "user", "name": name}}
+
+
+def test_a_team_note_after_a_draft_earns_a_fresh_draft(monkeypatch):
+    """Lana's steering: write a note, re-apply the label, get a new draft."""
+    store = CommandStore()
+    client = CommandClient([api_message(42, "First")])
+    seen = []
+    monkeypatch.setattr(main, "dedup_store", lambda: store)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(main, "process_message",
+                        lambda value, thread=None: seen.append(thread.team_notes) or True)
+
+    main.process_label_command(7, 1, 42)
+    client.messages.append(_note(43, "**Dewie draft** (private; model)\n\nHi"))
+    client.messages.append(_note(44, "@dewie Tell her it shipped today."))
+    main.process_label_command(7, 1, 44)
+    main.process_label_command(7, 1, 44)  # same note again: no third draft
+
+    assert seen == ["", "Lana: Tell her it shipped today."]
+    assert store.claimed == {
+        "conversation:7:message:42:action:draft",
+        "conversation:7:message:42:action:draft:note:44",
+    }
