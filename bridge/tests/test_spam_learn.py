@@ -48,6 +48,11 @@ def test_a_sender_with_real_conversations_is_never_learned():
     assert spam.evaluate_rules("deals@promo.example", "x") is None
 
 
+def test_conversations_under_the_retired_spam_label_count_as_noise():
+    client = Client(others=[{"id": 4, "labels": ["system", "spam"]}])
+    assert spam.learn_from_label(client, 9) == "learned"
+
+
 def test_our_own_addresses_are_never_learned():
     assert spam.learn_sender("service@actuarialbookstore.com", 9) == "internal"
 

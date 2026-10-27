@@ -35,6 +35,9 @@ from pathlib import Path
 # The team's own label (10-27): one label for "noise", whoever applied it. Applying it
 # by hand also teaches the sender (learn_from_label); the old "spam" label is retired.
 SPAM_LABEL = "spampromo"
+# Labels that already mean "noise": the retired "spam" label still sits on every
+# conversation the screen resolved before 10-27 (first live learn: Zoom, 11 of them).
+NOISE_LABELS = frozenset({SPAM_LABEL, "spam"})
 _LEARNED_DEFAULT = Path(__file__).resolve().parent.parent / "data" / "spam_learned.csv"
 _LEARNED_HEADER = (
     "action,sender,subject,subject_match,source\n"
@@ -422,7 +425,7 @@ def _has_real_mail(client, contact_id, conversation_id: int) -> bool:
     for other in client.contact_conversations(int(contact_id)):
         if int(other.get("id") or 0) == int(conversation_id):
             continue
-        if SPAM_LABEL not in (other.get("labels") or []):
+        if not NOISE_LABELS & set(other.get("labels") or []):
             return True
     return False
 
