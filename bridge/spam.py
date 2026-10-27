@@ -419,14 +419,31 @@ def _conversation_sender(client, conversation_id: int) -> tuple[str, int | None,
 
 
 def _has_real_mail(client, contact_id, conversation_id: int) -> bool:
-    """True when this contact has any other conversation not labelled spampromo."""
+    """True when we have ever answered this contact in a conversation that isn't noise.
+
+    A reply is what makes someone a correspondent. "Any unlabelled conversation"
+    was the first guard and it was wrong: Zoom has dozens of unlabelled notices
+    and we have never written back to any of them (10-27, #2119).
+    """
     if not contact_id:
         return False
     for other in client.contact_conversations(int(contact_id)):
-        if int(other.get("id") or 0) == int(conversation_id):
+        other_id = int(other.get("id") or 0)
+        if other_id == int(conversation_id):
             continue
-        if not NOISE_LABELS & set(other.get("labels") or []):
+        if NOISE_LABELS & set(other.get("labels") or []):
+            continue
+        if other.get("first_reply_created_at"):
             return True
+        # Replies sent from Outlook never stamp first_reply_created_at; they arrive
+        # as "[sent by ...]" private notes from sent sync (Enola, Transmedia: 0
+        # stamps, every reply in Outlook). So look at the conversation itself.
+        page = client.get_conversation(other_id)
+        for m in (page.messages if page.ok else ()):
+            outgoing = m.get("message_type") in (1, "outgoing")
+            content = str(m.get("content") or "")
+            if outgoing and (not m.get("private") or content.startswith("[sent by")):
+                return True
     return False
 
 
@@ -440,7 +457,7 @@ def learn_from_label(client, conversation_id: int) -> str:
             outcome = "has_real_mail"
             client.post_private_note(
                 int(conversation_id),
-                f"Not learned: {email} also has conversations that aren't spampromo, so only "
+                f"Not learned: we've replied to {email} before, so only "
                 f"this one is resolved. Add them to spam_rules.csv if they really are noise.")
         else:
             outcome = learn_sender(email, conversation_id)

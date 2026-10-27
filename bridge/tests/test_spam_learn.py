@@ -5,9 +5,13 @@ from parser import label_change
 
 
 class Client:
-    def __init__(self, email="deals@promo.example", others=(), status="open"):
+    def __init__(self, email="deals@promo.example", others=(), status="open", threads=None):
         self.email, self.others, self.status = email, list(others), status
+        self.threads = threads or {}
         self.notes, self.resolved = [], []
+
+    def get_conversation(self, conversation_id, before=None):
+        return SimpleNamespace(ok=True, messages=tuple(self.threads.get(conversation_id, ())))
 
     def conversation_details(self, conversation_id):
         return {"id": conversation_id, "status": self.status,
@@ -41,8 +45,8 @@ def test_removing_the_label_unlearns():
     assert spam.evaluate_rules("deals@promo.example", "x") is None
 
 
-def test_a_sender_with_real_conversations_is_never_learned():
-    client = Client(others=[{"id": 4, "labels": ["order"]}])
+def test_a_sender_we_have_answered_is_never_learned():
+    client = Client(others=[{"id": 4, "labels": ["order"], "first_reply_created_at": 1761000000}])
     assert spam.learn_from_label(client, 9) == "has_real_mail"
     assert client.resolved == [9] and client.notes[0].startswith("Not learned:")
     assert spam.evaluate_rules("deals@promo.example", "x") is None
@@ -51,6 +55,19 @@ def test_a_sender_with_real_conversations_is_never_learned():
 def test_conversations_under_the_retired_spam_label_count_as_noise():
     client = Client(others=[{"id": 4, "labels": ["system", "spam"]}])
     assert spam.learn_from_label(client, 9) == "learned"
+
+
+def test_unanswered_unlabelled_notices_do_not_block_learning():
+    client = Client(others=[{"id": 4, "labels": ["system"], "first_reply_created_at": None},
+                            {"id": 5, "labels": []}])
+    assert spam.learn_from_label(client, 9) == "learned"
+
+
+def test_a_sender_we_answered_from_outlook_is_never_learned():
+    outlook = {"id": 1, "message_type": 1, "private": True,
+               "content": "[sent by Paula via Outlook 2026-10-26 18:24 UTC]\n\nHi Enola"}
+    client = Client(others=[{"id": 4, "labels": []}], threads={4: [outlook]})
+    assert spam.learn_from_label(client, 9) == "has_real_mail"
 
 
 def test_our_own_addresses_are_never_learned():
