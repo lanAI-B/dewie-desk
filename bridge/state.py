@@ -146,6 +146,14 @@ class DedupStore:
                     observed_at TEXT NOT NULL
                 )"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS conversation_link (
+                    child_conversation_id INTEGER PRIMARY KEY,
+                    parent_conversation_id INTEGER NOT NULL,
+                    method TEXT NOT NULL,
+                    linked_at TEXT NOT NULL
+                )"""
+            )
 
     @contextmanager
     def _connect(self):
@@ -333,6 +341,45 @@ class DedupStore:
                 ),
             )
             return cursor.rowcount == 1
+
+    def record_message_id(self, message_id: str, conversation_id: int, account_id: int = 0) -> bool:
+        """Map one email WE sent to its conversation, so the customer's answer can find it.
+
+        Mail sent from Outlook or webmail never passes through Chatwoot, so
+        without this the reply to it has no parent anywhere (10-27: one customer's
+        thread split six ways). First claimer wins, as for any Message-ID.
+        """
+        key = message_id_key(message_id)
+        if not key or not conversation_id:
+            return False
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO thread_key(
+                    thread_key, conversation_id, account_id, unique_key, observed_at
+                ) VALUES (?, ?, ?, 1, ?)""",
+                (key, int(conversation_id), int(account_id or 0),
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            return cursor.rowcount == 1
+
+    def link_conversations(self, child: int, parent: int, method: str) -> bool:
+        """Record that ``child`` continues ``parent``; false if child is already linked."""
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO conversation_link(
+                    child_conversation_id, parent_conversation_id, method, linked_at
+                ) VALUES (?, ?, ?, ?)""",
+                (int(child), int(parent), method, datetime.now(timezone.utc).isoformat()),
+            )
+            return cursor.rowcount == 1
+
+    def parent_of(self, conversation_id: int) -> int | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT parent_conversation_id FROM conversation_link WHERE child_conversation_id = ?",
+                (int(conversation_id),),
+            ).fetchone()
+        return int(row[0]) if row else None
 
     def latest_inbound_id(self, conversation_id: int) -> int | None:
         """Return the newest inbound already observed for a conversation."""

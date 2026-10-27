@@ -1,8 +1,33 @@
 # Threading: why replies open new conversations
 
-Status: **observing** (Lana and Wren, from 2026-10-16). No code change yet. We gather a few
-more days of data while Lana replies from the desk only and the rest of the team still
-replies from Outlook. Then we decide on a fix.
+Status: **fix built 10-27** (`bridge/rethread.py`, `BRIDGE_RETHREAD`). The observations below
+are kept as the reasoning; read "10-27: what we found and built" first.
+
+## 10-27: what we found and built
+
+- Detached replies fell from 83 to 58 per 14 days as the team moved to the desk, but one
+  customer's thread was still split six ways (quarter0118: 1536 → 1882 → 1909 → 1966 →
+  1971 → 2072), and Transmedia's quote the same.
+- **Correction:** the `dw*mdwk*` / `wn1xsdwk*` hosts are the webstores' mail servers, not
+  team PCs. Every subject behind them is a store receipt/confirmation/keys email, so a reply
+  to one is usually a genuine first contact.
+- Chatwoot checks only `In-Reply-To`, and only within one inbox. The customer's own
+  `References` usually name an earlier email we hold, and the bridge already mapped every
+  inbound Message-ID (`thread_key`). Replaying 14 days against that map: 17 replies placed by
+  Message-ID, 8 more by subject + sender.
+- Fix: on a conversation's **first** inbound email, `rethread.find_parent` looks up
+  In-Reply-To, then References, then (for Re:/Fwd: subjects) subject + sender. A hit on an
+  **older** conversation folds: note in the new one ("Thread continues from #N"), note in the
+  old one and resolve it if open. The new conversation is where the customer is and where
+  we reply from. Chatwoot has no merge API, so nothing is moved.
+- **Our own mail** landing in the other inbox (service@ABS replies to chat-box questions)
+  is linked with notes both ways and nothing is resolved.
+- Sent sync and the desk's sent copy now record the Message-ID of every email we send, so
+  replies to Outlook/webmail mail find their conversation too.
+- The drafter follows the links (`thread.fetch_chain`, up to 6 conversations) and reads the
+  chain as one thread; notes in earlier conversations are history, never steering.
+- `BRIDGE_RETHREAD`: `off`, `dry_run` (default: log + counters `rethread_*`, change
+  nothing), `on`.
 
 Re-run the numbers (read-only):
 

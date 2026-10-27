@@ -25,9 +25,10 @@ except ImportError:
 
 from chatwoot import ChatwootClient
 from conv_memory_sync import ConvMemoryWriter
+import rethread
 import sent_copy
 from attachments import extract_attachment_text
-from thread import DraftThread, build_draft_thread, fetch_all_messages
+from thread import DraftThread, build_draft_thread, fetch_all_messages, fetch_chain
 from parser import (
     ParsedMessage,
     draft_label_added,
@@ -149,6 +150,11 @@ _sent_sync_runner = sent_sync.SentSyncRunner(lambda: run_sent_sync_pass())
 
 def process_sent_message(sent: sent_copy.SentMessage) -> None:
     """Copy one Chatwoot-sent reply to the Sent folder and/or conv_memory."""
+    # Chatwoot threads a reply to this only inside its own inbox; the map lets
+    # an answer that lands in the other inbox find its way back.
+    if dedup_store().record_message_id(sent.rfc822_message_id, sent.conversation_id,
+                                       sent.account_id):
+        _increment("sent_ids_recorded")
     outcome = sent_copy.process_sent(
         sent,
         store=dedup_store(),
@@ -520,7 +526,9 @@ def process_label_command(
         return
 
     try:
-        messages = fetch_all_messages(chatwoot_client(), conversation_id, conversation.messages)
+        messages = fetch_chain(chatwoot_client(), dedup_store(), conversation_id,
+                               fetch_all_messages(chatwoot_client(), conversation_id,
+                                                  conversation.messages))
         thread = build_draft_thread(messages, int(message.message_id), through_message_id)
     except Exception:
         # The thread makes the draft better; its absence must never block one.
@@ -596,16 +604,26 @@ def ingest_message_created(payload: dict) -> tuple[ParsedMessage, dict]:
         _increment("transport_filtered")
         _increment(f"reason_{message.skip_reason}")
         return message, {"accepted": False, "reason": message.skip_reason}
+    # Before recording: afterwards the message's own subject key points at itself.
+    parent = None
+    if rethread.mode() != "off":
+        try:
+            parent = rethread.find_parent(dedup_store(), message)
+        except Exception:
+            log.exception("rethread lookup failed conversation=%s", message.conversation_id)
     if not dedup_store().record_inbound(message):
         _increment("duplicate_message")
         return message, {"accepted": False, "reason": "duplicate_message"}
     _increment("inbound_recorded")
-    return message, {
+    response = {
         "accepted": True,
         "action": "recorded",
         "conversation": message.conversation_id,
         "message": message.message_id,
     }
+    if parent is not None:
+        response["rethread_parent"] = parent
+    return message, response
 
 
 @app.get("/health")
@@ -752,6 +770,12 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks) 
 
     if event == "message_created":
         message, response = ingest_message_created(payload)
+        parent = response.pop("rethread_parent", None)
+        if parent is not None:
+            background_tasks.add_task(
+                rethread.handle, chatwoot_client(), dedup_store(), message, parent, _increment)
+            response["rethread"] = {"parent": parent.conversation_id, "method": parent.method,
+                                    "mode": rethread.mode()}
         if response.get("accepted") and spam.enabled():
             background_tasks.add_task(screen_inbound, message)
             response["spam_screen"] = "dry_run" if spam.dry_run() else "queued"

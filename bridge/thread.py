@@ -27,7 +27,10 @@ from sent_sync import strip_quoted_history
 THREAD_BUDGET = 100_000
 MAX_PAGES = 25  # 20 messages a page; a 500-message thread is far past any real one
 DEWIE_NOTE_PREFIXES = ("**Dewie draft**", "**Dewie's doubts**", "**Dewie could not draft",
-                       "**Dewie order capture**")
+                       "**Dewie order capture**",
+                       # The bridge's own thread-fold notes (rethread.py): plumbing, not content.
+                       "**Thread continues**", "**Thread continued in**")
+MAX_CHAIN = 6  # conversations folded into one thread (10-27's worst case was six)
 OUTLOOK_NOTE_PREFIX = "[sent by"
 
 
@@ -56,6 +59,30 @@ def fetch_all_messages(client, conversation_id: int, first_page: tuple | list) -
         if not added:
             break
     return sorted(messages.values(), key=lambda m: int(m["id"]))
+
+
+def fetch_chain(client, store, conversation_id: int, messages: list[dict]) -> list[dict]:
+    """This conversation's messages plus those of the conversations it continues.
+
+    rethread.py links a detached reply to the conversation it answers. Messages
+    from those earlier conversations are tagged ``_earlier`` with their
+    conversation id: they are history, never steering. Best effort: a parent
+    that cannot be read is skipped, not fatal.
+    """
+    combined = list(messages)
+    seen = {int(conversation_id)}
+    current = int(conversation_id)
+    for _ in range(MAX_CHAIN - 1):
+        parent = store.parent_of(current)
+        if not parent or parent in seen:
+            break
+        seen.add(parent)
+        page = client.get_conversation(parent)
+        if page.ok:
+            for m in fetch_all_messages(client, parent, page.messages):
+                combined.append({**m, "_earlier": parent})
+        current = parent
+    return sorted(combined, key=lambda m: int(m.get("id") or 0))
 
 
 def _kind(m: dict) -> str | None:
@@ -119,6 +146,8 @@ def _render(m: dict, kind: str) -> str:
         content = customer_text(content)
     if not content and m.get("attachments"):
         content = f"[{len(m['attachments'])} attachment(s)]"
+    if m.get("_earlier"):
+        label += f", in earlier conversation #{m['_earlier']}"
     return f"[#{m.get('id')}] {label}:\n{content}"
 
 
@@ -156,7 +185,7 @@ def build_draft_thread(messages: list[dict], customer_message_id: int,
         if kind is None:
             continue
         content = str(m.get("content") or "").strip()
-        steering = kind == "note" and mid > customer_message_id
+        steering = kind == "note" and mid > customer_message_id and not m.get("_earlier")
         if steering:
             note_ids.append(mid)
         if steering and addressed_to_dewie(content):

@@ -242,6 +242,9 @@ class CommandStore:
         self.recorded.append(value.message_id)
         return True
 
+    def parent_of(self, conversation_id):
+        return None
+
     def claim(self, key):
         if key in self.claimed:
             return False

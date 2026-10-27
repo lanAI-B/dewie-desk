@@ -350,6 +350,10 @@ def sync_replies(
             )
             continue
         report.bump(f"resolved_{method}")
+        if not dry_run and reply.message_id:
+            # The customer's answer to this mail will point at its Message-ID.
+            if store.record_message_id(reply.message_id, int(conversation_id)):
+                report.bump("sent_ids_recorded")
         if not store.claim(claim_key):
             report.bump("duplicate_sent")
             continue
