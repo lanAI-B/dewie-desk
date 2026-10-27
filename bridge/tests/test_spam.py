@@ -200,7 +200,7 @@ def test_live_mode_labels_then_resolves_and_logs(monkeypatch):
     monkeypatch.setenv("SPAM_AUTORESOLVE_DRY_RUN", "false")
     client = FakeClient()
     assert spam.screen(message("ebay@ebay.com"), client) == "resolved"
-    assert client.calls == [("label", 7, "spam"), ("resolve", 7)]
+    assert client.calls == [("label", 7, "spampromo"), ("resolve", 7)]
     [record] = audit_lines()
     assert record["outcome"] == "resolved" and record["dry_run"] is False
 
@@ -210,7 +210,7 @@ def test_label_failure_stops_before_resolve(monkeypatch):
     monkeypatch.setenv("SPAM_AUTORESOLVE_DRY_RUN", "false")
     client = FakeClient(label_ok=False)
     assert spam.screen(message("ebay@ebay.com"), client) == "label_failed"
-    assert client.calls == [("label", 7, "spam")]
+    assert client.calls == [("label", 7, "spampromo")]
     assert audit_lines()[0]["http_status"] == 401
 
 
@@ -315,7 +315,7 @@ def test_webhook_screens_new_inbound_and_never_drafts(monkeypatch):
     ).json()
 
     assert body["spam_screen"] == "queued"
-    assert client.calls == [("label", 7, "spam"), ("resolve", 7)]
+    assert client.calls == [("label", 7, "spampromo"), ("resolve", 7)]
     assert audit_lines()[0]["conversation_id"] == 7
 
 
@@ -331,7 +331,7 @@ def test_duplicate_webhook_is_not_screened_twice(monkeypatch):
     value = payload(sender={"email": "ebay@ebay.com"})
     signed_post(test_client, value)
     signed_post(test_client, value)
-    assert client.calls == [("label", 7, "spam"), ("resolve", 7)]
+    assert client.calls == [("label", 7, "spampromo"), ("resolve", 7)]
 
 
 def test_screen_error_is_contained(monkeypatch):

@@ -254,6 +254,26 @@ def draft_label_added(payload: dict, label: str) -> int | None:
     return None
 
 
+def label_change(payload: dict, label: str) -> tuple[int, str] | None:
+    """(conversation ID, "added" | "removed") when ``label`` changed on this update."""
+    payload = _dict(payload)
+    if payload.get("event") != "conversation_updated":
+        return None
+    for change in payload.get("changed_attributes") or []:
+        values = _dict(_dict(change).get("label_list"))
+        previous = values.get("previous_value")
+        current = values.get("current_value")
+        if not isinstance(previous, list) or not isinstance(current, list):
+            continue
+        if (label in previous) == (label in current):
+            continue
+        try:
+            return int(payload.get("id")), ("added" if label in current else "removed")
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def newest_customer_message(
     messages: list[dict],
     *,

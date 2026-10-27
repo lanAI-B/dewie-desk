@@ -32,6 +32,7 @@ from thread import DraftThread, build_draft_thread, fetch_all_messages, fetch_ch
 from parser import (
     ParsedMessage,
     draft_label_added,
+    label_change,
     newest_customer_message,
     parse_message_created,
 )
@@ -578,6 +579,12 @@ def _spam_classify(message: ParsedMessage):
     )
 
 
+def _spam_label_task(task, conversation_id: int, direction: str) -> None:
+    """Learn or unlearn a sender after spampromo changed on a conversation."""
+    outcome = task(chatwoot_client(), conversation_id)
+    _increment(f"spam_label_{direction}_{outcome.split(':')[0]}")
+
+
 def screen_inbound(message: ParsedMessage) -> str:
     """Spam/noise screen for one newly recorded inbound message. Never drafts."""
     try:
@@ -782,8 +789,16 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks) 
         return response
 
     if event == "conversation_updated":
+        spam_change = label_change(payload, spam.SPAM_LABEL)
+        if spam_change is not None:
+            spam_conversation, direction = spam_change
+            task = spam.learn_from_label if direction == "added" else spam.unlearn_from_label
+            background_tasks.add_task(_spam_label_task, task, spam_conversation, direction)
         conversation_id = draft_label_added(payload, DRAFT_LABEL)
         if conversation_id is None:
+            if spam_change is not None:
+                return {"accepted": True, "action": f"spam_label_{spam_change[1]}",
+                        "conversation": spam_change[0]}
             _increment("transport_filtered")
             _increment("reason_no_draft_label_added")
             return {"accepted": False, "reason": "no_draft_label_added"}

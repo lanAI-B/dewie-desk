@@ -121,3 +121,9 @@ def no_live_chatwoot(monkeypatch):
     monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", refuse)
     yield
     assert attempts == [], f"tests must not contact a real HTTP service: {attempts}"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_learned_spam_rules(tmp_path, monkeypatch):
+    """Tests never read or write the live data/spam_learned.csv."""
+    monkeypatch.setenv("SPAM_LEARNED_PATH", str(tmp_path / "spam_learned.csv"))

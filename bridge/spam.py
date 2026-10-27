@@ -32,7 +32,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-SPAM_LABEL = "spam"
+# The team's own label (10-27): one label for "noise", whoever applied it. Applying it
+# by hand also teaches the sender (learn_from_label); the old "spam" label is retired.
+SPAM_LABEL = "spampromo"
+_LEARNED_DEFAULT = Path(__file__).resolve().parent.parent / "data" / "spam_learned.csv"
+_LEARNED_HEADER = (
+    "action,sender,subject,subject_match,source\n"
+    "# Senders the team taught by labelling a conversation spampromo (spam.learn_from_label).\n"
+    "# Exact addresses only. Removing the label from a conversation unlearns its sender.\n"
+)
+INTERNAL_DOMAINS = frozenset({"actuarialbookstore.com", "actexlearning.com", "actexmadriver.com"})
+_learn_lock = threading.Lock()
 RULES_PATH = Path(__file__).resolve().parent / "spam_rules.csv"
 _DEFAULT_LOG = Path(__file__).resolve().parent.parent / "data" / "spam-autoresolve.jsonl"
 _MATCH_MODES = frozenset({"contains", "word", "word_case"})
@@ -82,6 +92,11 @@ def classifier_min_confidence() -> float:
     return min(max(value, 0.5), 1.0)
 
 
+def learned_path() -> Path:
+    configured = (os.environ.get("SPAM_LEARNED_PATH") or "").strip()
+    return Path(configured) if configured else _LEARNED_DEFAULT
+
+
 def audit_path() -> Path:
     configured = (os.environ.get("SPAM_AUTORESOLVE_LOG") or "").strip()
     return Path(configured) if configured else _DEFAULT_LOG
@@ -104,10 +119,11 @@ class Rule:
     subject_match: str
     source: str
     line: int
+    origin: str = "spam_rules.csv"
 
     @property
     def rule_id(self) -> str:
-        return f"spam_rules.csv:{self.line}"
+        return f"{self.origin}:{self.line}"
 
     @property
     def names_exact_sender(self) -> bool:
@@ -139,8 +155,18 @@ _rules_cache: dict[Path, tuple[float, tuple[Rule, ...]]] = {}
 
 
 def load_rules(path: Path | None = None) -> tuple[Rule, ...]:
-    """Parse the rule file strictly; a malformed row fails loudly, never silently."""
-    path = Path(path or RULES_PATH)
+    """The hand-kept rules plus the senders the team taught by labelling.
+
+    With an explicit ``path``, only that file (tests, one-off checks).
+    """
+    if path is not None:
+        return _load_file(Path(path))
+    learned = learned_path()
+    return _load_file(RULES_PATH) + (_load_file(learned) if learned.exists() else ())
+
+
+def _load_file(path: Path) -> tuple[Rule, ...]:
+    """Parse one rule file strictly; a malformed row fails loudly, never silently."""
     mtime = path.stat().st_mtime
     cached = _rules_cache.get(path)
     if cached and cached[0] == mtime:
@@ -157,7 +183,7 @@ def load_rules(path: Path | None = None) -> tuple[Rule, ...]:
             raise ValueError(f"{path.name}:{number}: unknown subject_match {mode!r}")
         if action == "spam" and not sender and not subject:
             raise ValueError(f"{path.name}:{number}: a spam rule needs a sender or subject")
-        rules.append(Rule(action, sender, subject, mode, row.get("source", ""), number))
+        rules.append(Rule(action, sender, subject, mode, row.get("source", ""), number, path.name))
     result = tuple(rules)
     _rules_cache[path] = (mtime, result)
     return result
@@ -332,7 +358,120 @@ def screen(message, client, classify=None) -> str:
     return "resolved"
 
 
+# --- Learning from the label ---------------------------------------------------
+# Lana, 10-27: labelling something spampromo did nothing, and nothing carried forward.
+# Now the label resolves the conversation and teaches its exact sender, so their next
+# email is labelled and resolved on arrival. Guardrails: exact address, never a whole
+# domain; never our own domains; never a sender who also has real (non-spampromo)
+# conversations. Removing the label unlearns. Every auto-resolve stays reversible.
+
+
+def learn_sender(email: str, conversation_id: int) -> str:
+    """Add one exact sender to the learned rules. Returns the outcome code."""
+    sender = _normalize_sender(email)
+    if "@" not in sender:
+        return "no_sender"
+    if sender.rsplit("@", 1)[-1] in INTERNAL_DOMAINS:
+        return "internal"
+    known = evaluate_rules(sender, "")
+    if known and known.spam and known.stage == "rule":
+        return "already_known"
+    path = learned_path()
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _learn_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fresh = not path.exists()
+        with path.open("a", encoding="utf-8", newline="") as handle:
+            if fresh:
+                handle.write(_LEARNED_HEADER)
+            csv.writer(handle, lineterminator="\n").writerow(
+                ["spam", sender, "", "contains", f"labelled #{int(conversation_id)} {stamp}"])
+    return "learned"
+
+
+def unlearn_sender(email: str) -> int:
+    """Drop every learned row for one exact sender; return how many went."""
+    sender = _normalize_sender(email)
+    path = learned_path()
+    if not sender or not path.exists():
+        return 0
+    with _learn_lock:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        keep, dropped = [], 0
+        for line in lines:
+            fields = next(csv.reader([line]), [])
+            if len(fields) > 1 and fields[0] == "spam" and fields[1].strip().lower() == sender:
+                dropped += 1
+                continue
+            keep.append(line)
+        if dropped:
+            path.write_text("".join(keep), encoding="utf-8")
+    return dropped
+
+
+def _conversation_sender(client, conversation_id: int) -> tuple[str, int | None, dict]:
+    details = client.conversation_details(conversation_id) or {}
+    sender = ((details.get("meta") or {}).get("sender") or {})
+    return str(sender.get("email") or ""), sender.get("id"), details
+
+
+def _has_real_mail(client, contact_id, conversation_id: int) -> bool:
+    """True when this contact has any other conversation not labelled spampromo."""
+    if not contact_id:
+        return False
+    for other in client.contact_conversations(int(contact_id)):
+        if int(other.get("id") or 0) == int(conversation_id):
+            continue
+        if SPAM_LABEL not in (other.get("labels") or []):
+            return True
+    return False
+
+
+def learn_from_label(client, conversation_id: int) -> str:
+    """A person (or a rule) put spampromo on a conversation: resolve it, learn its sender."""
+    try:
+        email, contact_id, details = _conversation_sender(client, conversation_id)
+        if str(details.get("status") or "").lower() != "resolved":
+            client.resolve_conversation(int(conversation_id))
+        if _has_real_mail(client, contact_id, conversation_id):
+            outcome = "has_real_mail"
+            client.post_private_note(
+                int(conversation_id),
+                f"Not learned: {email} also has conversations that aren't spampromo, so only "
+                f"this one is resolved. Add them to spam_rules.csv if they really are noise.")
+        else:
+            outcome = learn_sender(email, conversation_id)
+            if outcome == "learned":
+                client.post_private_note(
+                    int(conversation_id),
+                    f"Learned: future mail from {email} is labelled spampromo and resolved on "
+                    f"arrival. Remove the label here to undo.")
+    except Exception as exc:
+        log.exception("spam learn failed conversation=%s", conversation_id)
+        outcome = f"failed:{type(exc).__name__}"
+    audit({"conversation_id": conversation_id, "outcome": f"learn_{outcome}", "stage": "label"})
+    return outcome
+
+
+def unlearn_from_label(client, conversation_id: int) -> str:
+    """spampromo came off a conversation: the sender is not noise after all."""
+    try:
+        email, _contact, _details = _conversation_sender(client, conversation_id)
+        dropped = unlearn_sender(email)
+        outcome = "unlearned" if dropped else "nothing_learned"
+        if dropped:
+            client.post_private_note(
+                int(conversation_id),
+                f"Unlearned: mail from {email} reaches the desk again.")
+    except Exception as exc:
+        log.exception("spam unlearn failed conversation=%s", conversation_id)
+        outcome = f"failed:{type(exc).__name__}"
+    audit({"conversation_id": conversation_id, "outcome": outcome, "stage": "label"})
+    return outcome
+
+
 __all__ = [
+    "learn_from_label", "learn_sender", "learned_path", "unlearn_from_label", "unlearn_sender",
     "SPAM_LABEL", "Rule", "Verdict", "audit", "audit_path", "classifier_enabled",
     "customer_signals", "dry_run", "enabled", "evaluate", "evaluate_classification",
     "evaluate_rules", "load_rules", "screen", "status",
