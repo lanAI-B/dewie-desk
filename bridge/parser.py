@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import html
+import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,9 @@ class ParsedMessage:
     message_type: str = ""
     content_type: str = ""
     attachments: list[ParsedAttachment] = field(default_factory=list)
+    # What the email itself says it carried (content_attributes.email.
+    # number_of_attachments). It can exceed len(attachments) (#2350).
+    declared_attachments: int = 0
     rfc822_message_id: str = ""
     in_reply_to: str = ""
     references: list[str] = field(default_factory=list)
@@ -198,6 +204,68 @@ def _attachments(payload: dict) -> list[ParsedAttachment]:
     return found
 
 
+MAX_INLINE_IMAGES = 3
+_IMG_SRC_RE = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>""", re.IGNORECASE)
+_IMG_ALT_RE = re.compile(r"""\balt\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+_ACTIVE_STORAGE_PREFIX = "/rails/active_storage/blobs/"
+
+
+def _email_bodies(payload: dict) -> list[str]:
+    email = _dict(_dict(payload.get("content_attributes")).get("email"))
+    bodies = []
+    for key in ("html_content", "text_content"):
+        full = _dict(email.get(key)).get("full")
+        if isinstance(full, str) and full.strip():
+            bodies.append(full)
+    return bodies
+
+
+def _inline_images(payload: dict) -> list[ParsedAttachment]:
+    """Inline images Chatwoot kept only as <img> tags in the stored email body.
+
+    Chatwoot stores an inline (Content-Disposition: inline) image as an
+    ActiveStorage blob and writes an <img> pointing at it into
+    content_attributes.email.{html,text}_content.full; the message's
+    ``attachments`` stays null and ``content`` keeps only the text (#2350, a
+    grade report). Only ActiveStorage blob paths are kept, as a path with no
+    host: the downloader resolves it against the bridge's own Chatwoot, so a
+    customer-written <img src="https://elsewhere/..."> is never fetched.
+    """
+    found: list[ParsedAttachment] = []
+    seen: set[str] = set()
+    for body in _email_bodies(payload):
+        for tag in _IMG_SRC_RE.finditer(body):
+            src = html.unescape(tag.group(1)).strip()
+            path = urlparse(src).path
+            if not path.startswith(_ACTIVE_STORAGE_PREFIX) or path in seen:
+                continue
+            seen.add(path)
+            alt = _IMG_ALT_RE.search(tag.group(0))
+            name = (alt.group(1).strip() if alt else "") or unquote(path.rsplit("/", 1)[-1])
+            found.append(ParsedAttachment(file_type="image", name=name, data_url=path))
+            if len(found) >= MAX_INLINE_IMAGES:
+                return found
+    return found
+
+
+def _declared_attachments(payload: dict) -> int:
+    email = _dict(_dict(payload.get("content_attributes")).get("email"))
+    try:
+        return max(int(email.get("number_of_attachments") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _all_attachments(payload: dict) -> list[ParsedAttachment]:
+    """Real attachments first, then inline images not already among them."""
+    found = _attachments(payload)
+    names = {a.name for a in found if a.name}
+    for image in _inline_images(payload):
+        if image.name not in names:
+            found.append(image)
+    return found
+
+
 def parse_message_created(payload: dict) -> ParsedMessage:
     payload = _dict(payload)
     conversation = _dict(payload.get("conversation"))
@@ -222,7 +290,8 @@ def parse_message_created(payload: dict) -> ParsedMessage:
         body=str(payload.get("content") or "").strip(),
         message_type=_message_type(payload.get("message_type")),
         content_type=str(payload.get("content_type") or "").strip().lower(),
-        attachments=_attachments(payload),
+        attachments=_all_attachments(payload),
+        declared_attachments=_declared_attachments(payload),
         rfc822_message_id=rfc822_message_id,
         in_reply_to=in_reply_to,
         references=references,
@@ -328,7 +397,8 @@ def newest_customer_message(
         body=str(value.get("content") or value.get("processed_message_content") or "").strip(),
         message_type="incoming",
         content_type=str(value.get("content_type") or "").strip().lower(),
-        attachments=_attachments(value),
+        attachments=_all_attachments(value),
+        declared_attachments=_declared_attachments(value),
         rfc822_message_id=rfc822_message_id,
         in_reply_to=in_reply_to,
         references=references,

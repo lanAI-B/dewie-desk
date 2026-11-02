@@ -407,6 +407,21 @@ def _thread_fields(request_type, thread: DraftThread) -> dict:
     return {name: value for name, value in wanted.items() if name in fields and value}
 
 
+def _attachment_fields(request_type, message: ParsedMessage, attachment_text) -> dict:
+    """How many attachments the email carried and how many the drafter cannot read.
+
+    The email's own count (number_of_attachments) can exceed what Chatwoot hands
+    over (#2350: an inline grade report with attachments null); the shortfall is
+    unreadable. Filtered to the fields this DewieOps checkout's DraftRequest has.
+    """
+    fetched = len(message.attachments)
+    received = max(fetched, message.declared_attachments)
+    unreadable = getattr(attachment_text, "unreadable", 0) + max(0, received - fetched)
+    fields = {f.name for f in dataclasses.fields(request_type)}
+    wanted = {"attachments_received": received, "attachments_unreadable": unreadable}
+    return {name: value for name, value in wanted.items() if name in fields and received}
+
+
 def process_message(message: ParsedMessage, *, classify=None,
                     thread: DraftThread | None = None) -> bool:
     """Run one requested draft action; true means a private note was posted."""
@@ -460,6 +475,7 @@ def process_message(message: ParsedMessage, *, classify=None,
             subject=message.subject,
             body=message.body,
             image_text=attachment_text,
+            **_attachment_fields(DraftRequest, message, attachment_text),
             **_thread_fields(DraftRequest, thread),
         ))
     except Exception as exc:
