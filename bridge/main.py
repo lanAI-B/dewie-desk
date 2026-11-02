@@ -307,6 +307,11 @@ def _private_note(result, decision, doubts: str | None = None) -> str:
             f"{classification.provider or 'unknown'}/{classification.model or 'unknown'}"
         )
     header = f"{doubts}\n\n" if doubts else ""
+    # The orders the draft rests on, resolved by the DewieOps drafter in code (#100090).
+    # getattr: a DewieOps without the field still drafts.
+    orders = getattr(result, "orders_line", None)
+    if orders:
+        header += f"{orders}\n\n"
     return (
         f"{header}**Dewie draft** (private; {result.via_template or result.model or 'model'}{evidence})\n\n"
         f"{result.draft_body}"

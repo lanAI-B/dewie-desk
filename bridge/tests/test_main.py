@@ -123,6 +123,30 @@ def test_confident_draft_carries_no_doubts(monkeypatch):
     assert note.startswith("**Dewie draft**")
 
 
+def test_draft_note_names_the_orders_it_rests_on(monkeypatch):
+    """#100090: the drafter's resolved orders head the note; the draft body is untouched."""
+    client = NoteClient()
+    monkeypatch.setenv("BRIDGE_SHADOW_MODE", "false")
+    monkeypatch.setenv("BRIDGE_DRY_RUN", "false")
+    monkeypatch.setattr(main, "order_capture_enabled", lambda: False)
+    monkeypatch.setattr(main, "chatwoot_client", lambda: client)
+    monkeypatch.setattr(
+        main,
+        "_decision",
+        lambda value, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+    )
+    monkeypatch.setattr(
+        "dewie_brain.drafter.draft_reply",
+        lambda request: SimpleNamespace(unusable_reason=None, draft_body="Draft", via_template=None,
+                                        model="m", orders_line="Orders: ACTEX 1273339"),
+    )
+
+    assert main.process_message(message()) is True
+    [(_, note)] = client.notes
+    assert note.startswith("Orders: ACTEX 1273339\n\n**Dewie draft**")
+    assert note.endswith("\n\nDraft")
+
+
 def test_unusable_draft_says_so_instead_of_going_silent(monkeypatch):
     client = NoteClient()
     monkeypatch.setenv("BRIDGE_SHADOW_MODE", "false")
