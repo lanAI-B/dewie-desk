@@ -68,8 +68,9 @@ until the board stays sane on its own.
      live customer inbox.
    - **Later (M365):** when the Rackspace→M365 migration completes, add a new inbox via
      Chatwoot's native **Microsoft OAuth** channel (Azure app with `Mail.ReadWrite`,
-     `Mail.Send`, `offline_access`) and retire the Rackspace one. Provider swap is UI
-     config only — the bridge and drafter never change.
+     `Mail.Send`, `offline_access`) and retire the Rackspace one. The inbox swap is UI
+     config, but the bridge's sent sync/sent copy log in to Rackspace with a password and
+     must change: see `docs/m365-mailbox-access.md` (AL, the first M365 inbox, 11-18).
 
 3. **Observe.** Send a test email to the connected mailbox; confirm it lands as a ticket.
    Reply from the Chatwoot UI; confirm it reaches the sender. **This is the go/no-go.**
