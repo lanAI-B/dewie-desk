@@ -48,7 +48,7 @@ Borrows Chatwoot's token for that inbox, prints its expiry, the folders, and the
 Never prints the token. On a Rackspace (password) inbox it says so and stops. Run it first after any
 Chatwoot upgrade, and on each mailbox as it moves to M365.
 
-## 5. Sent sync for AL: the plan
+## 5. Sent sync for AL (live since 2026-11-18 12:05 ET, a5b280f)
 
 The bridge's sent sync (`bridge/sent_sync.py`) already does the hard parts for ABS/ACTEX: match a
 sent reply to its conversation (In-Reply-To → References → subject+recipient), post it as a
@@ -58,11 +58,19 @@ from inbound webhooks (#2947, #2959 had 3–4 keys each on 11-18), so matching w
 The only new piece is **how the mailbox is opened**: a per-mailbox *auth source*.
 
 - `password` (today's ABS/XL): `MailBox(host).login(user, password)`.
-- `chatwoot_oauth` (new): read the current access token from Chatwoot's DB for that inbox, then
+- `chatwoot_oauth` (**built**): read the current access token from Chatwoot's DB for that inbox, then
   `MailBox("outlook.office365.com").xoauth2(user, token)`. No refresh logic of our own: if the
   token is stale, the pass reports `token_stale` and the next pass (5 min) picks up Chatwoot's
   renewed one.
 - Folder per mailbox (`Sent Items`). Read-only select and `mark_seen=False`, as now.
+- Config: `SENT_SYNC_INBOXES=6:al` (a sync-only list, so sent copy never touches AL) and
+  `SENT_SYNC_AL_{AUTH=chatwoot_oauth, USERNAME, FOLDER="Sent Items"}`. The token is read with
+  `docker exec dewie-desk-postgres-1 psql` (no Postgres driver in the bridge); a stale, missing or
+  wrong-mailbox token skips the pass as `token_stale` / `token_missing` / `token_mailbox_mismatch`.
+- Replies Chatwoot itself sent are skipped on every mailbox by their Message-ID
+  (`conversation/<uuid>/messages/<id>@…`), counted `chatwoot_sent_skipped`.
+- First live pass (11-18 17:05 UTC): 30 seen, 8 notes posted (Clement's replies on #2947, #2959…),
+  22 unresolved (14 automated, 8 replies to threads from before AL joined the desk).
 
 **Later, with Paul:** an app-only permission (`Mail.Read`, scoped to the support mailboxes with an
 Exchange application access policy or RBAC for Applications) removes the dependency on Chatwoot's
