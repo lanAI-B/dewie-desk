@@ -59,6 +59,15 @@ IMAP_TIMEOUT_SECONDS = 60
 # Set by the bridge on copies of Chatwoot-sent replies it files in Sent. The
 # value is the Chatwoot message id; its presence alone means "already in Chatwoot".
 DESK_COPY_HEADER = "X-Dewie-Desk-Copy"
+# Chatwoot stamps every reply it sends: <conversation/<uuid>/messages/<id>@domain>
+# (ConversationReplyMailer#custom_message_id). On a Microsoft-channel inbox the
+# mailbox files that reply in Sent Items itself, with no desk-copy header, so the
+# Message-ID is how we know it is already in Chatwoot.
+CHATWOOT_SENT_MESSAGE_ID = re.compile(r"^conversation/[0-9a-f-]+/messages/\d+@", re.IGNORECASE)
+M365_IMAP_HOST = "outlook.office365.com"
+DEFAULT_CHATWOOT_PG_CONTAINER = "dewie-desk-postgres-1"
+AUTH_PASSWORD = "password"
+AUTH_CHATWOOT_OAUTH = "chatwoot_oauth"
 _QUOTE_MARKERS = (
     re.compile(r"^\s*-+\s*original message\s*-+\s*$", re.IGNORECASE),
     re.compile(r"^\s*on .{5,200}\bwrote:\s*$", re.IGNORECASE),
@@ -337,6 +346,10 @@ def sync_replies(
             # Loop guard: the bridge filed this copy of a Chatwoot-sent reply.
             report.bump("desk_copy_skipped")
             continue
+        if CHATWOOT_SENT_MESSAGE_ID.match(reply.message_id or ""):
+            # Sent from Chatwoot and filed by the mailbox itself (M365): already shown.
+            report.bump("chatwoot_sent_skipped")
+            continue
         claim_key = note_claim_key(reply)
         if not claim_key:
             report.bump("unidentifiable")
@@ -385,8 +398,12 @@ def fetch_sent_replies(
     lookback_days: int,
     port: int = sent_copy.DEFAULT_IMAP_PORT,
     limit: int = 200,
+    access_token: str = "",
 ):
-    """Read the Sent folder read-only. Nothing here writes to the mailbox."""
+    """Read the Sent folder read-only. Nothing here writes to the mailbox.
+
+    ``access_token`` set means OAuth (XOAUTH2) instead of the password.
+    """
     from imap_tools import AND, MailBox
 
     since = date.today() - timedelta(days=max(lookback_days, 0))
@@ -395,9 +412,12 @@ def fetch_sent_replies(
     # one people are working in, so select it read-only ourselves and let
     # mark_seen=False keep the unread flags as the human left them. The timeout
     # keeps a hung server from wedging the periodic pass forever.
-    with MailBox(host, port, timeout=IMAP_TIMEOUT_SECONDS).login(
-        username, password, initial_folder=None
-    ) as mailbox:
+    client = MailBox(host, port, timeout=IMAP_TIMEOUT_SECONDS)
+    if access_token:
+        opened = client.xoauth2(username, access_token, initial_folder=None)
+    else:
+        opened = client.login(username, password, initial_folder=None)
+    with opened as mailbox:
         mailbox.folder.set(folder, readonly=True)
         for message in mailbox.fetch(AND(date_gte=since), mark_seen=False, limit=limit):
             replies.append(from_mail_message(message))
@@ -444,7 +464,8 @@ def configured_mailboxes(environ=None):
     """
     env = environ if environ is not None else os.environ
     mapping = sent_copy.parse_inbox_map(env.get("SENT_COPY_INBOXES", ""))
-    if not mapping:
+    extra = sent_copy.parse_inbox_map(env.get("SENT_SYNC_INBOXES", ""))
+    if not mapping and not extra:
         return [], "inbox_map_not_configured"
     found = []
     seen: set[str] = set()
@@ -454,7 +475,99 @@ def configured_mailboxes(environ=None):
         seen.add(label)
         config, problem = sent_copy.mailbox_for_inbox(inbox_id, env)
         found.append((label, config, problem))
+    for inbox_id, label in sorted(extra.items()):
+        if label in seen:
+            found.append((label, None, "label_in_both_maps"))
+            continue
+        seen.add(label)
+        config, problem = sync_only_mailbox(inbox_id, label, env)
+        found.append((label, config, problem))
     return found, ""
+
+
+@dataclass(frozen=True)
+class OAuthMailbox:
+    """A sync-only mailbox opened with the token Chatwoot holds for its inbox (M365).
+
+    Listed in SENT_SYNC_INBOXES, not SENT_COPY_INBOXES: the mailbox files Chatwoot's
+    replies in Sent Items itself, so the bridge never APPENDs to it.
+    """
+
+    label: str
+    inbox_id: int
+    host: str
+    port: int
+    username: str
+    folder: str
+    auth: str = AUTH_CHATWOOT_OAUTH
+    password: str = field(default="", repr=False)
+
+
+def sync_only_mailbox(inbox_id: int, label: str, environ=None) -> tuple[OAuthMailbox | None, str]:
+    """SENT_SYNC_<LABEL>_{AUTH,USERNAME,FOLDER,IMAP_HOST,IMAP_PORT}. No defaults for
+    the mailbox or folder: a wrong guess reads someone else's mail or nothing."""
+    env = environ if environ is not None else os.environ
+    prefix = f"SENT_SYNC_{label.upper()}_"
+    auth = (env.get(prefix + "AUTH") or "").strip().lower()
+    if auth != AUTH_CHATWOOT_OAUTH:
+        return None, f"auth_unsupported:{auth or 'missing'}"
+    username = (env.get(prefix + "USERNAME") or "").strip()
+    folder = (env.get(prefix + "FOLDER") or "").strip()
+    if not username:
+        return None, "mailbox_username_missing"
+    if not folder:
+        return None, "mailbox_folder_missing"
+    port = _positive_int(prefix + "IMAP_PORT", sent_copy.DEFAULT_IMAP_PORT, env)
+    host = (env.get(prefix + "IMAP_HOST") or M365_IMAP_HOST).strip()
+    return OAuthMailbox(label=label, inbox_id=inbox_id, host=host, port=port,
+                        username=username, folder=folder), ""
+
+
+@dataclass(frozen=True)
+class ChatwootToken:
+    email: str
+    access_token: str = field(repr=False)
+    expires_on: datetime | None
+
+
+_TOKEN_SQL = """
+select c.email, c.provider_config::jsonb->>'expires_on', c.provider_config::jsonb->>'access_token'
+from channel_email c
+join inboxes i on i.channel_id = c.id and i.channel_type = 'Channel::Email'
+where i.id = {inbox_id:d} and c.provider = 'microsoft';
+"""
+
+
+def chatwoot_access_token(inbox_id: int, environ=None) -> ChatwootToken | None:
+    """The access token Chatwoot currently holds for a Microsoft-channel inbox.
+
+    Read from Chatwoot's own Postgres (``channel_email.provider_config``, internal
+    schema; see docs/m365-mailbox-access.md). Chatwoot renews it about hourly; we
+    only borrow it and never refresh it ourselves. None when the inbox has none.
+    """
+    import subprocess
+
+    env = environ if environ is not None else os.environ
+    container = (env.get("SENT_SYNC_CHATWOOT_PG_CONTAINER") or DEFAULT_CHATWOOT_PG_CONTAINER).strip()
+    out = subprocess.run(
+        ["docker", "exec", "-i", container, "sh", "-c",
+         'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -F "|" -f -'],
+        input=_TOKEN_SQL.format(inbox_id=int(inbox_id)),
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    row = out.stdout.strip()
+    if not row:
+        return None
+    email, expires_on, token = row.split("|", 2)
+    if not token:
+        return None
+    expires = None
+    if expires_on:
+        try:
+            expires = datetime.fromisoformat(expires_on.replace(" UTC", "+00:00"))
+        except ValueError:
+            expires = None
+    return ChatwootToken(email=email.strip(), access_token=token.strip(), expires_on=expires)
 
 
 def sent_sync_status(runner: "SentSyncRunner | None" = None, environ=None) -> dict:
@@ -489,9 +602,36 @@ def sync_mailbox(
     dry_run: bool,
     lookback_days: int,
     fetch=fetch_sent_replies,
+    token_source=chatwoot_access_token,
+    now=None,
 ) -> SyncReport:
     """Fetch one mailbox's Sent folder and place its replies."""
     report = SyncReport()
+    oauth: dict = {}
+    if getattr(config, "auth", AUTH_PASSWORD) == AUTH_CHATWOOT_OAUTH:
+        try:
+            token = token_source(config.inbox_id)
+        except Exception as exc:
+            report.bump("token_unavailable")
+            report.problem = f"token_unavailable:{type(exc).__name__}"
+            log.error("sent sync token read failed mailbox=%s error=%s", config.label, type(exc).__name__)
+            return report
+        if token is None:
+            report.bump("token_missing")
+            report.problem = "token_missing"
+            return report
+        if token.email.lower() != config.username.lower():
+            # Never read one mailbox with another inbox's token.
+            report.bump("token_mailbox_mismatch")
+            report.problem = "token_mailbox_mismatch"
+            return report
+        current = now or datetime.now(timezone.utc)
+        if token.expires_on is not None and token.expires_on <= current + timedelta(minutes=2):
+            # Chatwoot renews it on its own cycle; the next pass picks the new one up.
+            report.bump("token_stale")
+            report.problem = "token_stale"
+            return report
+        oauth = {"access_token": token.access_token}
     try:
         replies = fetch(
             host=config.host,
@@ -500,6 +640,7 @@ def sync_mailbox(
             password=config.password,
             folder=config.folder,
             lookback_days=lookback_days,
+            **oauth,
         )
     except Exception as exc:
         # A type name only: an IMAP error can echo what the server was sent.
@@ -524,6 +665,7 @@ def run_sent_sync(
     mailbox: str | None = None,
     fetch=fetch_sent_replies,
     environ=None,
+    token_source=chatwoot_access_token,
 ) -> PassReport:
     """One pass over every configured mailbox (or only ``mailbox``).
 
@@ -560,6 +702,7 @@ def run_sent_sync(
             dry_run=effective_dry_run,
             lookback_days=days,
             fetch=fetch,
+            token_source=token_source,
         )
     return report
 
@@ -729,7 +872,7 @@ def main(argv=None, *, store=None, client=None, fetch=fetch_sent_replies) -> int
         "--mailbox",
         default=None,
         metavar="LABEL",
-        help="only this SENT_COPY_INBOXES label (default: every mailbox)",
+        help="only this SENT_COPY_INBOXES or SENT_SYNC_INBOXES label (default: every mailbox)",
     )
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     arguments = parser.parse_args(argv)
