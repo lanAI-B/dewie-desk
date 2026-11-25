@@ -219,6 +219,42 @@ def test_draft_request_includes_extracted_attachment_text(monkeypatch):
     assert captured["request"].image_text == "PDF text"
 
 
+
+def _drafted_store(monkeypatch, inbox_id):
+    captured = {}
+    value = message()
+    value.inbox_id = inbox_id
+    monkeypatch.setenv("BRIDGE_SHADOW_MODE", "false")
+    monkeypatch.setenv("BRIDGE_DRY_RUN", "true")
+    monkeypatch.setattr(
+        main,
+        "_decision",
+        lambda message, **_: DraftDecision(DecisionAction.DRAFT, "drafted", category="GENERAL"),
+    )
+    monkeypatch.setattr(main, "extract_attachment_text", lambda values, logger: None)
+
+    def draft_reply(request):
+        captured["request"] = request
+        return SimpleNamespace(unusable_reason=None, draft_body="Draft")
+
+    monkeypatch.setattr("dewie_brain.drafter.draft_reply", draft_reply)
+    main.process_message(value)
+    return captured["request"].store
+
+
+def test_draft_store_follows_the_inbox(monkeypatch):
+    """#100070: an ACTEX ticket signs as ACTEX, not the ABS default."""
+    monkeypatch.setenv("BRIDGE_OUTBOUND_INBOX_IDS", "abs:1,actex:3")
+    assert _drafted_store(monkeypatch, 3) == "actex"
+    assert _drafted_store(monkeypatch, 1) == "abs"
+    assert _drafted_store(monkeypatch, 6) is None      # AL: no store owns it
+
+
+def test_shared_single_inbox_names_no_store(monkeypatch):
+    monkeypatch.setenv("BRIDGE_OUTBOUND_INBOX_IDS", "")
+    monkeypatch.setenv("BRIDGE_OUTBOUND_INBOX_ID", "3")
+    assert _drafted_store(monkeypatch, 3) is None
+
 def api_message(message_id, body):
     return {
         "id": message_id,
