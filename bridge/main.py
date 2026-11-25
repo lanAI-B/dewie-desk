@@ -407,6 +407,20 @@ def _thread_fields(request_type, thread: DraftThread) -> dict:
     return {name: value for name, value in wanted.items() if name in fields and value}
 
 
+def _store_fields(request_type, inbox_id) -> dict:
+    """The store this inbox sends as, for the drafter's sign-off and FAQ (#100070).
+
+    Read from the outbound map (BRIDGE_OUTBOUND_INBOX_IDS=abs:1,actex:3). An inbox
+    no store owns, or one shared by several (the single-inbox fallback), names no
+    store and the drafter keeps its default. Skipped on a drafter without the field.
+    """
+    if "store" not in {f.name for f in dataclasses.fields(request_type)}:
+        return {}
+    stores = [store for store, inbox in conversations.configured_inboxes().items()
+              if inbox_id is not None and inbox == int(inbox_id)]
+    return {"store": stores[0]} if len(stores) == 1 else {}
+
+
 def process_message(message: ParsedMessage, *, classify=None,
                     thread: DraftThread | None = None) -> bool:
     """Run one requested draft action; true means a private note was posted."""
@@ -461,6 +475,7 @@ def process_message(message: ParsedMessage, *, classify=None,
             body=message.body,
             image_text=attachment_text,
             **_thread_fields(DraftRequest, thread),
+            **_store_fields(DraftRequest, message.inbox_id),
         ))
     except Exception as exc:
         _increment("draft_failed")
